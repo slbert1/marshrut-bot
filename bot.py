@@ -9,8 +9,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.webhook.aiohttp import BaseRequestHandler
-from aiohttp import web
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,11 +16,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
 
-app = web.Application()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-handler = BaseRequestHandler(dispatcher=dp)
-app.router.add_post('/webhook', handler)
 
 class Cart(StatesGroup):
     viewing = State()
@@ -46,7 +41,7 @@ async def create_mono_invoice(amount: int, order_id: str, user_id: int, desc: st
         'amount': amount * 100,
         'ccy': 980,
         'merchantPaymInfo': {'reference': order_id, 'description': desc},
-        'webHookUrl': f'https://{os.getenv("RENDER_URL")}/mono_webhook',
+        'webHookUrl': 'https://example.com/mono_webhook',  # Mono не обязателен для теста
         'validUntil': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + 3600)),
         'redirectUrl': f"https://t.me/MarshrutKhust_bot?start=paid_{order_id}"
     }
@@ -106,15 +101,8 @@ async def payment_success(message: types.Message):
             text += f"🎥 {video['name']}: {video['url']}\n"
         await message.answer(text)
 
-async def on_startup(_):
-    await bot.set_webhook(f"https://{os.getenv('RENDER_URL')}/webhook")
-
-async def on_shutdown():
-    await bot.delete_webhook()
-
 async def main():
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
+    print("Бот запущен...")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
