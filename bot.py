@@ -47,7 +47,7 @@ async def create_mono_invoice(amount: int, order_id: str, user_id: int, desc: st
     }
     headers = {'X-Token': MONO_TOKEN, 'Content-Type': 'application/json'}
     async with aiohttp.ClientSession() as session:
-        async with session.post('https://api.monobank.ua/api/merchant/invoice/new', json=data, headers=headers) as resp:
+        async with session.post('https://api.monobank.ua/api/merchant/invoice/create', json=data, headers=headers) as resp:
             result = await resp.json()
             if 'invoiceId' in result:
                 return f"https://pay.monobank.ua/{result['invoiceId']}"
