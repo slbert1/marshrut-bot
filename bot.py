@@ -16,7 +16,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
-WEBHOOK_URL = "https://webhook.site/873bf366-974d-4a92-b93c-fe815662bcd9"  # ← ВСТАВЬ СВОЙ URL СЮДА
+WEBHOOK_URL = "https://webhook.site/873bf366-974d-4492-b93c-fe815662bcd9"  # ← ТВОЙ URL
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -39,7 +39,7 @@ class Cart(StatesGroup):
     viewing = State()
     paying = State()
 
-# === КНОПКИ ===
+# === СТАРТ ===
 @dp.message(Command('start'))
 async def start(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -100,15 +100,25 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
                 return f"https://pay.monobank.ua/{result['invoiceId']}"
             raise Exception(f"Mono error: {result}")
 
-# === WEBHOOK ОТ MONO ===
+# === WEBHOOK ОТ MONO (РАБОТАЕТ НА created И success) ===
 async def mono_webhook(request):
     data = await request.json()
-    if data.get('status') == 'success':
-        invoice_id = data['invoiceId']
-        row = cursor.execute("SELECT user_id, routes FROM purchases WHERE order_id LIKE ? AND status='pending'", (f"%{invoice_id.split('_')[-1]}",)).fetchone()
+    print("WEBHOOK:", data)  # Логи
+
+    # В ТЕСТЕ — created, в продакшене — success
+    if data.get('status') in ['created', 'success']:
+        reference = data.get('reference', '')
+        if not reference:
+            return web.Response(text="No reference")
+
+        row = cursor.execute(
+            "SELECT user_id, routes FROM purchases WHERE order_id=? AND status='pending'",
+            (reference,)
+        ).fetchone()
+
         if row:
             user_id, routes = row
-            cursor.execute("UPDATE purchases SET status='paid' WHERE user_id=?", (user_id,))
+            cursor.execute("UPDATE purchases SET status='paid' WHERE order_id=?", (reference,))
             conn.commit()
 
             text = "Оплата пройшла! Твої маршрути:\n\n"
@@ -116,9 +126,30 @@ async def mono_webhook(request):
                 video = VIDEOS[r]
                 text += f"{video['name']}: {video['url']}\n"
             await bot.send_message(user_id, text)
+
     return web.Response(text="OK")
 
-# === HEALTH CHECK ДЛЯ RENDER ===
+# === РУЧНАЯ КОМАНДА (на всякий случай) ===
+@dp.message(F.text.startswith('/start paid_'))
+async def manual_paid(message: types.Message):
+    try:
+        order_id = message.text.split()[-1]
+        row = cursor.execute(
+            "SELECT routes FROM purchases WHERE order_id=? AND status='paid'",
+            (order_id,)
+        ).fetchone()
+        if row:
+            text = "Твої маршрути:\n\n"
+            for r in row[0].split(','):
+                video = VIDEOS[r]
+                text += f"{video['name']}: {video['url']}\n"
+            await message.answer(text)
+        else:
+            await message.answer("Оплата не знайдена. Спробуй ще раз.")
+    except:
+        await message.answer("Помилка. Використовуй: /start paid_XXXXX")
+
+# === HEALTH CHECK ===
 async def health(request):
     return web.Response(text="OK")
 
@@ -126,7 +157,6 @@ async def health(request):
 async def main():
     print("Бот запущен...")
 
-    # Веб-сервер для Render + Webhook
     app = web.Application()
     app.router.add_get('/', health)
     app.router.add_post('/webhook', mono_webhook)
@@ -135,7 +165,6 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', os.getenv('PORT', 8000))
     await site.start()
 
-    # Запуск бота
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
