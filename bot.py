@@ -24,7 +24,16 @@ dp = Dispatcher(storage=MemoryStorage())
 # === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute('CREATE TABLE IF NOT EXISTS purchases (user_id INTEGER, order_id TEXT, invoice_id TEXT, routes TEXT, status TEXT)')
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS purchases (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        order_id TEXT,
+        invoice_id TEXT UNIQUE,
+        routes TEXT,
+        status TEXT
+    )
+''')
 conn.commit()
 
 # === ВИДЕО ===
@@ -75,7 +84,7 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
             disable_web_page_preview=True
         )
         cursor.execute(
-            "INSERT INTO purchases (user_id, order_id, invoice_id, routes, status) VALUES (?, ?, ?, ?, 'pending')",
+            "INSERT OR REPLACE INTO purchases (user_id, order_id, invoice_id, routes, status) VALUES (?, ?, ?, ?, 'pending')",
             (user_id, order_id, invoice_id, routes)
         )
         conn.commit()
@@ -100,24 +109,24 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
                 return result['invoiceId']
             raise Exception(f"Mono error: {result}")
 
-# === WEBHOOK ОТ MONO (РАБОТАЕТ НА created) ===
+# === WEBHOOK (РАБОТАЕТ НА created) ===
 async def mono_webhook(request):
     data = await request.json()
     print("WEBHOOK:", data)
 
     if data.get('status') in ['created', 'success']:
         invoice_id = data.get('invoiceId', '')
-        reference = data.get('reference', '')
+        if not invoice_id:
+            return web.Response(text="No invoiceId")
 
-        # Ищем по invoiceId ИЛИ order_id
         row = cursor.execute(
-            "SELECT user_id, routes FROM purchases WHERE invoice_id=? OR order_id=? AND status='pending'",
-            (invoice_id, reference)
+            "SELECT user_id, routes FROM purchases WHERE invoice_id=? AND status='pending'",
+            (invoice_id,)
         ).fetchone()
 
         if row:
             user_id, routes = row
-            cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=? OR order_id=?", (invoice_id, reference))
+            cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
             conn.commit()
 
             text = "Оплата пройшла! Твої маршрути:\n\n"
@@ -128,23 +137,23 @@ async def mono_webhook(request):
 
     return web.Response(text="OK")
 
-# === РУЧНАЯ КОМАНДА (по invoiceId или order_id) ===
+# === РУЧНАЯ КОМАНДА ===
 @dp.message(F.text.startswith('/start paid_'))
 async def manual_paid(message: types.Message):
     try:
         paid_id = message.text.split()[-1]
         row = cursor.execute(
-            "SELECT routes FROM purchases WHERE (invoice_id=? OR order_id=?) AND status='paid'",
+            "SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?",
             (paid_id, paid_id)
         ).fetchone()
-        if row:
+        if row and row[1] == 'paid':
             text = "Твої маршрути:\n\n"
             for r in row[0].split(','):
                 video = VIDEOS[r]
                 text += f"{video['name']}: {video['url']}\n"
             await message.answer(text)
         else:
-            await message.answer("Оплата не знайдена. Спробуй ще раз.")
+            await message.answer("Оплата не знайдена або не підтверджена.")
     except:
         await message.answer("Помилка. Використовуй: /start paid_XXXXX")
 
