@@ -16,7 +16,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
-WEBHOOK_URL = "https://webhook.site/873bf366-974d-4492-b93c-fe815662bcd9"  # ← ТВОЙ URL
+WEBHOOK_URL = "https://webhook.site/873bf366-974d-4492-b93c-fe815662bcd9"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -51,6 +51,11 @@ class Cart(StatesGroup):
 # === СТАРТ ===
 @dp.message(Command('start'))
 async def start(message: types.Message, state: FSMContext):
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith('paid_'):
+        await manual_paid(message)
+        return
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="1️⃣ №1 — 250 грн", callback_data="buy_route1")],
         [InlineKeyboardButton(text="2️⃣ №8 — 250 грн", callback_data="buy_route8")],
@@ -88,8 +93,10 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
             (user_id, order_id, invoice_id, routes)
         )
         conn.commit()
+        print(f"[DB] Saved: user={user_id}, order={order_id}, invoice={invoice_id}")
     except Exception as e:
         await callback.message.answer(f"Помилка: {e}")
+        print(f"[ERROR] {e}")
     await state.set_state(Cart.paying)
 
 # === MONO INVOICE ===
@@ -106,16 +113,18 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
         async with session.post('https://api.monobank.ua/api/merchant/invoice/create', json=data, headers=headers) as resp:
             result = await resp.json()
             if 'invoiceId' in result:
-                return result['invoiceId']
+                invoice_id = result['invoiceId']
+                print(f"[MONO] Created invoice: {invoice_id}, redirect: paid_{order_id}")
+                return invoice_id
             raise Exception(f"Mono error: {result}")
 
-# === WEBHOOK (РАБОТАЕТ НА created) ===
+# === WEBHOOK ===
 async def mono_webhook(request):
     data = await request.json()
-    print("WEBHOOK:", data)
+    print(f"[WEBHOOK] Received: {data}")
 
     if data.get('status') in ['created', 'success']:
-        invoice_id = data.get('invoiceId', '')
+        invoice_id = data.get('invoiceId')
         if not invoice_id:
             return web.Response(text="No invoiceId")
 
@@ -128,34 +137,39 @@ async def mono_webhook(request):
             user_id, routes = row
             cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
             conn.commit()
+            print(f"[DB] Updated to paid: invoice_id={invoice_id}")
 
             text = "Оплата пройшла! Твої маршрути:\n\n"
             for r in routes.split(','):
                 video = VIDEOS[r]
                 text += f"{video['name']}: {video['url']}\n"
             await bot.send_message(user_id, text)
+            print(f"[BOT] Sent video to user {user_id}")
+        else:
+            print(f"[WEBHOOK] No pending purchase for invoice_id={invoice_id}")
 
     return web.Response(text="OK")
 
-# === РУЧНАЯ КОМАНДА (по invoice_id) ===
-@dp.message(F.text.startswith('/start paid_'))
+# === РУЧНАЯ КОМАНДА (по invoice_id ИЛИ order_id) ===
 async def manual_paid(message: types.Message):
-    try:
-        paid_id = message.text.split()[-1]
-        row = cursor.execute(
-            "SELECT routes, status FROM purchases WHERE invoice_id=?",
-            (paid_id,)
-        ).fetchone()
-        if row and row[1] == 'paid':
-            text = "Твої маршрути:\n\n"
-            for r in row[0].split(','):
-                video = VIDEOS[r]
-                text += f"{video['name']}: {video['url']}\n"
-            await message.answer(text)
-        else:
-            await message.answer("Оплата не підтверджена. Оплати ще раз.")
-    except Exception as e:
-        await message.answer("Помилка. Використовуй: /start paid_XXXXX")
+    paid_id = message.text.split()[-1]
+    print(f"[MANUAL] Checking paid_id: {paid_id}")
+
+    row = cursor.execute(
+        "SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?",
+        (paid_id, paid_id)
+    ).fetchone()
+
+    if row and row[1] == 'paid':
+        text = "Твої маршрути:\n\n"
+        for r in row[0].split(','):
+            video = VIDEOS[r]
+            text += f"{video['name']}: {video['url']}\n"
+        await message.answer(text)
+        print(f"[MANUAL] Sent video for {paid_id}")
+    else:
+        await message.answer("Оплата не підтверджена. Оплати ще раз.")
+        print(f"[MANUAL] Not paid: {paid_id}")
 
 # === HEALTH CHECK ===
 async def health(request):
