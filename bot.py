@@ -9,14 +9,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiohttp import web
 from dotenv import load_dotenv
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
-WEBHOOK_URL = "https://webhook.site/873bf366-974d-4492-b93c-fe815662bcd9"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -93,7 +91,7 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
             (user_id, order_id, invoice_id, routes)
         )
         conn.commit()
-        print(f"[DB] Saved: user={user_id}, order={order_id}, invoice={invoice_id}")
+        print(f"[DB] Saved: {invoice_id}")
     except Exception as e:
         await callback.message.answer(f"Помилка: {e}")
         print(f"[ERROR] {e}")
@@ -105,7 +103,7 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
         'amount': amount * 100,
         'ccy': 980,
         'merchantPaymInfo': {'reference': order_id, 'description': desc},
-        'webHookUrl': WEBHOOK_URL,
+        'webHookUrl': 'https://webhook.site/873bf366-974d-4492-b93c-fe815662bcd9',
         'redirectUrl': f"https://t.me/MarshrutKhust_bot?start=paid_{order_id}"
     }
     headers = {'X-Token': MONO_TOKEN, 'Content-Type': 'application/json'}
@@ -114,87 +112,76 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
             result = await resp.json()
             if 'invoiceId' in result:
                 invoice_id = result['invoiceId']
-                print(f"[MONO] Invoice created: {invoice_id}")
+                print(f"[MONO] Invoice: {invoice_id}")
                 return invoice_id
             raise Exception(f"Mono error: {result}")
 
-# === WEBHOOK — ВИДЕО НА created! ===
-async def mono_webhook(request):
-    data = await request.json()
-    print(f"[WEBHOOK] Received: {data}")
+# === ВЕБХУК (отдельный сервер) ===
+async def webhook_server():
+    from aiohttp import web
+    async def handle(request):
+        data = await request.json()
+        print(f"[WEBHOOK] {data}")
 
-    # ОТПРАВЛЯЕМ ВИДЕО НА created
-    if data.get('status') == 'created':
-        invoice_id = data.get('invoiceId')
-        if not invoice_id:
-            return web.Response(text="No invoiceId")
+        if data.get('status') == 'created':
+            invoice_id = data.get('invoiceId')
+            if not invoice_id:
+                return web.Response(text="No invoiceId")
 
-        row = cursor.execute(
-            "SELECT user_id, routes FROM purchases WHERE invoice_id=? AND status='pending'",
-            (invoice_id,)
-        ).fetchone()
+            row = cursor.execute(
+                "SELECT user_id, routes FROM purchases WHERE invoice_id=? AND status='pending'",
+                (invoice_id,)
+            ).fetchone()
 
-        if row:
-            user_id, routes = row
-            cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
-            conn.commit()
-            print(f"[DB] Status → paid: invoice_id={invoice_id}")
+            if row:
+                user_id, routes = row
+                cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
+                conn.commit()
+                print(f"[DB] Paid: {invoice_id}")
 
-            await asyncio.sleep(1)  # на всякий случай
+                text = "Оплата пройшла! Твої маршрути:\n\n"
+                for r in routes.split(','):
+                    video = VIDEOS[r]
+                    text += f"{video['name']}: {video['url']}\n"
+                await bot.send_message(user_id, text)
+                print(f"[BOT] Video sent to {user_id}")
 
-            text = "Оплата пройшла! Твої маршрути:\n\n"
-            for r in routes.split(','):
-                video = VIDEOS[r]
-                text += f"{video['name']}: {video['url']}\n"
-            await bot.send_message(user_id, text)
-            print(f"[BOT] Video sent to user {user_id}")
-        else:
-            print(f"[WEBHOOK] No pending purchase for invoice_id={invoice_id}")
+        return web.Response(text="OK")
 
-    return web.Response(text="OK")
+    app = web.Application()
+    app.router.add_post('/webhook', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8000)))
+    await site.start()
+    print("Webhook server running...")
 
-# === РУЧНАЯ КОМАНДА (по invoice_id или order_id) ===
+# === РУЧНАЯ КОМАНДА ===
 async def manual_paid(message: types.Message):
     paid_id = message.text.split()[-1]
-    print(f"[MANUAL] Checking: {paid_id}")
+    print(f"[MANUAL] Check: {paid_id}")
 
     row = cursor.execute(
         "SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?",
         (paid_id, paid_id)
     ).fetchone()
 
-    if row:
-        if row[1] == 'paid':
-            text = "Твої маршрути:\n\n"
-            for r in row[0].split(','):
-                video = VIDEOS[r]
-                text += f"{video['name']}: {video['url']}\n"
-            await message.answer(text)
-            print(f"[MANUAL] Video sent")
-        else:
-            await message.answer("Оплата не підтверджена. Оплати ще раз.")
-            print(f"[MANUAL] Status: {row[1]}")
+    if row and row[1] == 'paid':
+        text = "Твої маршрути:\n\n"
+        for r in row[0].split(','):
+            video = VIDEOS[r]
+            text += f"{video['name']}: {video['url']}\n"
+        await message.answer(text)
     else:
-        await message.answer("Запис не знайдено. Спробуй ще раз.")
-        print(f"[MANUAL] Not found")
-
-# === HEALTH CHECK ===
-async def health(request):
-    return web.Response(text="OK")
+        await message.answer("Оплата не підтверджена.")
 
 # === ЗАПУСК ===
 async def main():
     print("Бот запущен...")
-
-    app = web.Application()
-    app.router.add_get('/', health)
-    app.router.add_post('/webhook', mono_webhook)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', os.getenv('PORT', 8000))
-    await site.start()
-
-    await dp.start_polling(bot)
+    await asyncio.gather(
+        webhook_server(),
+        dp.start_polling(bot)
+    )
 
 if __name__ == '__main__':
     asyncio.run(main())
