@@ -116,46 +116,6 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
                 return invoice_id
             raise Exception(f"Mono error: {result}")
 
-# === ВЕБХУК (отдельный сервер) ===
-async def webhook_server():
-    from aiohttp import web
-    async def handle(request):
-        data = await request.json()
-        print(f"[WEBHOOK] {data}")
-
-        if data.get('status') == 'created':
-            invoice_id = data.get('invoiceId')
-            if not invoice_id:
-                return web.Response(text="No invoiceId")
-
-            row = cursor.execute(
-                "SELECT user_id, routes FROM purchases WHERE invoice_id=? AND status='pending'",
-                (invoice_id,)
-            ).fetchone()
-
-            if row:
-                user_id, routes = row
-                cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
-                conn.commit()
-                print(f"[DB] Paid: {invoice_id}")
-
-                text = "Оплата пройшла! Твої маршрути:\n\n"
-                for r in routes.split(','):
-                    video = VIDEOS[r]
-                    text += f"{video['name']}: {video['url']}\n"
-                await bot.send_message(user_id, text)
-                print(f"[BOT] Video sent to {user_id}")
-
-        return web.Response(text="OK")
-
-    app = web.Application()
-    app.router.add_post('/webhook', handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8000)))
-    await site.start()
-    print("Webhook server running...")
-
 # === РУЧНАЯ КОМАНДА ===
 async def manual_paid(message: types.Message):
     paid_id = message.text.split()[-1]
@@ -175,13 +135,10 @@ async def manual_paid(message: types.Message):
     else:
         await message.answer("Оплата не підтверджена.")
 
-# === ЗАПУСК ===
+# === ЗАПУСК — ТОЛЬКО POLLING ===
 async def main():
-    print("Бот запущен...")
-    await asyncio.gather(
-        webhook_server(),
-        dp.start_polling(bot)
-    )
+    print("Бот запущен (polling)...")
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
     asyncio.run(main())
