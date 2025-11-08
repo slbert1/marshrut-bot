@@ -137,14 +137,14 @@ async def mono_webhook(request):
 
     return web.Response(text="OK")
 
-# === РУЧНАЯ КОМАНДА ===
+# === РУЧНАЯ КОМАНДА (по invoice_id) ===
 @dp.message(F.text.startswith('/start paid_'))
 async def manual_paid(message: types.Message):
     try:
         paid_id = message.text.split()[-1]
         row = cursor.execute(
-            "SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?",
-            (paid_id, paid_id)
+            "SELECT routes, status FROM purchases WHERE invoice_id=?",
+            (paid_id,)
         ).fetchone()
         if row and row[1] == 'paid':
             text = "Твої маршрути:\n\n"
@@ -153,8 +153,8 @@ async def manual_paid(message: types.Message):
                 text += f"{video['name']}: {video['url']}\n"
             await message.answer(text)
         else:
-            await message.answer("Оплата не знайдена або не підтверджена.")
-    except:
+            await message.answer("Оплата не підтверджена. Оплати ще раз.")
+    except Exception as e:
         await message.answer("Помилка. Використовуй: /start paid_XXXXX")
 
 # === HEALTH CHECK ===
