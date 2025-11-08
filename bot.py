@@ -57,10 +57,10 @@ async def start(message: types.Message, state: FSMContext):
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1️⃣ №1 — 250 грн", callback_data="buy_route1")],
-        [InlineKeyboardButton(text="2️⃣ №8 — 250 грн", callback_data="buy_route8")],
-        [InlineKeyboardButton(text="3️⃣ №6 — 250 грн", callback_data="buy_route6")],
-        [InlineKeyboardButton(text="4️⃣ №2 — 250 грн", callback_data="buy_route2")],
+        [InlineKeyboardButton(text="1. №1 — 250 грн", callback_data="buy_route1")],
+        [InlineKeyboardButton(text="2. №8 — 250 грн", callback_data="buy_route8")],
+        [InlineKeyboardButton(text="3. №6 — 250 грн", callback_data="buy_route6")],
+        [InlineKeyboardButton(text="4. №2 — 250 грн", callback_data="buy_route2")],
         [InlineKeyboardButton(text="Всі 4 — 1000 грн", callback_data="buy_all")]
     ])
     await message.answer("Экзаменаційні маршрути — Хуст\n\nОбери маршрут:", reply_markup=kb)
@@ -114,16 +114,17 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
             result = await resp.json()
             if 'invoiceId' in result:
                 invoice_id = result['invoiceId']
-                print(f"[MONO] Created invoice: {invoice_id}, redirect: paid_{order_id}")
+                print(f"[MONO] Invoice created: {invoice_id}")
                 return invoice_id
             raise Exception(f"Mono error: {result}")
 
-# === WEBHOOK ===
+# === WEBHOOK — ВИДЕО НА created! ===
 async def mono_webhook(request):
     data = await request.json()
     print(f"[WEBHOOK] Received: {data}")
 
-    if data.get('status') in ['created', 'success']:
+    # ОТПРАВЛЯЕМ ВИДЕО НА created
+    if data.get('status') == 'created':
         invoice_id = data.get('invoiceId')
         if not invoice_id:
             return web.Response(text="No invoiceId")
@@ -137,39 +138,45 @@ async def mono_webhook(request):
             user_id, routes = row
             cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
             conn.commit()
-            print(f"[DB] Updated to paid: invoice_id={invoice_id}")
+            print(f"[DB] Status → paid: invoice_id={invoice_id}")
+
+            await asyncio.sleep(1)  # на всякий случай
 
             text = "Оплата пройшла! Твої маршрути:\n\n"
             for r in routes.split(','):
                 video = VIDEOS[r]
                 text += f"{video['name']}: {video['url']}\n"
             await bot.send_message(user_id, text)
-            print(f"[BOT] Sent video to user {user_id}")
+            print(f"[BOT] Video sent to user {user_id}")
         else:
             print(f"[WEBHOOK] No pending purchase for invoice_id={invoice_id}")
 
     return web.Response(text="OK")
 
-# === РУЧНАЯ КОМАНДА (по invoice_id ИЛИ order_id) ===
+# === РУЧНАЯ КОМАНДА (по invoice_id или order_id) ===
 async def manual_paid(message: types.Message):
     paid_id = message.text.split()[-1]
-    print(f"[MANUAL] Checking paid_id: {paid_id}")
+    print(f"[MANUAL] Checking: {paid_id}")
 
     row = cursor.execute(
         "SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?",
         (paid_id, paid_id)
     ).fetchone()
 
-    if row and row[1] == 'paid':
-        text = "Твої маршрути:\n\n"
-        for r in row[0].split(','):
-            video = VIDEOS[r]
-            text += f"{video['name']}: {video['url']}\n"
-        await message.answer(text)
-        print(f"[MANUAL] Sent video for {paid_id}")
+    if row:
+        if row[1] == 'paid':
+            text = "Твої маршрути:\n\n"
+            for r in row[0].split(','):
+                video = VIDEOS[r]
+                text += f"{video['name']}: {video['url']}\n"
+            await message.answer(text)
+            print(f"[MANUAL] Video sent")
+        else:
+            await message.answer("Оплата не підтверджена. Оплати ще раз.")
+            print(f"[MANUAL] Status: {row[1]}")
     else:
-        await message.answer("Оплата не підтверджена. Оплати ще раз.")
-        print(f"[MANUAL] Not paid: {paid_id}")
+        await message.answer("Запис не знайдено. Спробуй ще раз.")
+        print(f"[MANUAL] Not found")
 
 # === HEALTH CHECK ===
 async def health(request):
