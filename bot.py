@@ -19,7 +19,7 @@ MONO_TOKEN = os.getenv('MONO_TOKEN')
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === БАЗА ДАННЫХ ===
+# === БАЗА ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -46,7 +46,6 @@ class Cart(StatesGroup):
     viewing = State()
     paying = State()
 
-# === СТАРТ ===
 @dp.message(Command('start'))
 async def start(message: types.Message, state: FSMContext):
     args = message.text.split()
@@ -64,18 +63,12 @@ async def start(message: types.Message, state: FSMContext):
     await message.answer("Экзаменаційні маршрути — Хуст\n\nОбери маршрут:", reply_markup=kb)
     await state.set_state(Cart.viewing)
 
-# === ПОКУПКА ===
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy(callback: types.CallbackQuery, state: FSMContext):
     route_key = callback.data.split("_")[1]
-    if route_key == "all":
-        amount = 1000
-        desc = "Всі 4 маршрути"
-        routes = "route1,route8,route6,route2"
-    else:
-        amount = 250
-        desc = VIDEOS[route_key]['name']
-        routes = route_key
+    amount = 1000 if route_key == "all" else 250
+    desc = "Всі 4 маршрути" if route_key == "all" else VIDEOS[route_key]['name']
+    routes = "route1,route8,route6,route2" if route_key == "all" else route_key
 
     user_id = callback.from_user.id
     order_id = f"{user_id}_{int(time.time())}"
@@ -95,9 +88,7 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
     except Exception as e:
         await callback.message.answer(f"Помилка: {e}")
         print(f"[ERROR] {e}")
-    await state.set_state(Cart.paying)
 
-# === MONO INVOICE ===
 async def create_mono_invoice(amount: int, order_id: str, desc: str):
     data = {
         'amount': amount * 100,
@@ -111,34 +102,51 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
         async with session.post('https://api.monobank.ua/api/merchant/invoice/create', json=data, headers=headers) as resp:
             result = await resp.json()
             if 'invoiceId' in result:
-                invoice_id = result['invoiceId']
-                print(f"[MONO] Invoice: {invoice_id}")
-                return invoice_id
+                return result['invoiceId']
             raise Exception(f"Mono error: {result}")
 
-# === РУЧНАЯ КОМАНДА ===
 async def manual_paid(message: types.Message):
     paid_id = message.text.split()[-1]
-    print(f"[MANUAL] Check: {paid_id}")
-
     row = cursor.execute(
         "SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?",
         (paid_id, paid_id)
     ).fetchone()
-
     if row and row[1] == 'paid':
         text = "Твої маршрути:\n\n"
         for r in row[0].split(','):
-            video = VIDEOS[r]
-            text += f"{video['name']}: {video['url']}\n"
+            text += f"{VIDEOS[r]['name']}: {VIDEOS[r]['url']}\n"
         await message.answer(text)
     else:
         await message.answer("Оплата не підтверджена.")
 
-# === ЗАПУСК — ТОЛЬКО POLLING ===
+# === АВТО-ПРОВЕРКА ===
+async def check_pending_payments():
+    while True:
+        await asyncio.sleep(10)
+        rows = cursor.execute("SELECT invoice_id, user_id, routes FROM purchases WHERE status='pending'").fetchall()
+        for invoice_id, user_id, routes in rows:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    headers = {'X-Token': MONO_TOKEN}
+                    async with session.get(f'https://api.monobank.ua/api/merchant/invoice/status?invoiceId={invoice_id}', headers=headers) as resp:
+                        data = await resp.json()
+                        if data.get('status') == 'success':
+                            cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
+                            conn.commit()
+                            text = "Оплата пройшла! Твої маршрути:\n\n"
+                            for r in routes.split(','):
+                                text += f"{VIDEOS[r]['name']}: {VIDEOS[r]['url']}\n"
+                            await bot.send_message(user_id, text)
+                            print(f"[AUTO] Video sent to {user_id}")
+            except Exception as e:
+                print(f"[CHECK] Error: {e}")
+
 async def main():
-    print("Бот запущен (polling)...")
-    await dp.start_polling(bot)
+    print("Бот запущен...")
+    await asyncio.gather(
+        dp.start_polling(bot),
+        check_pending_payments()
+    )
 
 if __name__ == '__main__':
     asyncio.run(main())
