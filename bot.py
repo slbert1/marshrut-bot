@@ -12,7 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 
-# === FASTAPI ===
+# === FASTAPI + Uvicorn ===
 from fastapi import FastAPI, Request
 import uvicorn
 
@@ -20,7 +20,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
-ADMIN_ID = 5143085326  # ТВОЙ ID
+ADMIN_ID = 5143085326
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -230,11 +230,13 @@ async def send_admin_stats(invoice_id, user_id, routes, amount):
 
     await bot.send_message(ADMIN_ID, purchase_detail + "\n\n" + stats_text)
 
-# === ЗАПУСК ===
+# === ЗАПУСК БОТА И СЕРВЕРА ===
 async def run_bot():
     await dp.start_polling(bot)
 
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(run_bot())
+
 if __name__ == "__main__":
-    import threading
-    threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8000), daemon=True).start()
-    asyncio.run(run_bot())
+    uvicorn.run("bot:app", host="0.0.0.0", port=8000, reload=False)
