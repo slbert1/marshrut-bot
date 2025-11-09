@@ -198,7 +198,6 @@ async def check_pending_payments():
         rows = cursor.execute("SELECT invoice_id, user_id, routes, amount FROM purchases WHERE status='pending'").fetchall()
         for invoice_id, user_id, routes, amount in rows:
             try:
-                # ФИКС SSL: таймаут + корректное закрытие
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                     headers = {'X-Token': MONO_TOKEN}
                     async with session.get(f'https://api.monobank.ua/api/merchant/invoice/status?invoiceId={invoice_id}', headers=headers) as resp:
@@ -220,17 +219,25 @@ async def check_pending_payments():
                             await send_admin_stats(invoice_id, user_id, routes, amount)
                             print(f"[AUTO] Sent to {user_id}")
             except Exception as e:
-                # Игнорируем SSL-ошибки закрытия
                 if "APPLICATION_DATA_AFTER_CLOSE_NOTIFY" in str(e):
                     continue
                 print(f"[CHECK] Error: {e}")
 
-# === СТАТИСТИКА ДЛЯ АДМИНА ===
+# === СТАТИСТИКА ДЛЯ АДМИНА (с именем и @username) ===
 async def send_admin_stats(invoice_id, user_id, routes, amount):
+    # Получаем данные пользователя
+    try:
+        user = await bot.get_chat(user_id)
+        name = user.first_name or "Без імені"
+        username = f"@{user.username}" if user.username else ""
+        user_str = f"{name} {username}".strip()
+    except:
+        user_str = f"ID: {user_id} (немає даних)"
+
     purchase_detail = f"ID покупки: {invoice_id}\n"
-    purchase_detail += f"Пользователь: {user_id}\n"
-    purchase_detail += f"Маршруты: {routes}\n"
-    purchase_detail += f"Сумма: {amount} грн\n"
+    purchase_detail += f"Користувач: {user_str}\n"
+    purchase_detail += f"Маршрути: {routes}\n"
+    purchase_detail += f"Сума: {amount} грн\n"
     purchase_detail += f"Дата: {time.strftime('%d.%m.%Y %H:%M')}"
 
     today = date.today()
@@ -249,20 +256,20 @@ async def send_admin_stats(invoice_id, user_id, routes, amount):
 
     stats_text = f"СТАТИСТИКА:\n"
     stats_text += f"День: {day_amount} грн\n"
-    stats_text += f"Месяц: {month_amount} грн\n"
-    stats_text += f"Год: {year_amount} грн"
+    stats_text += f"Місяць: {month_amount} грн\n"
+    stats_text += f"Рік: {year_amount} грн"
 
     if year_amount > 900000:
-        stats_text += f"\nБлизко к лимиту НБУ (1 млн грн/год)! Планируй ФОП."
+        stats_text += f"\nБлизько до ліміту НБУ (1 млн грн/рік)! Плануй ФОП."
     elif year_amount > 500000:
-        stats_text += f"\nЛимит НБУ (1 млн грн/год) — следи за расходами."
+        stats_text += f"\nЛіміт НБУ (1 млн грн/рік) — стеж за доходами."
 
     full_text = purchase_detail + "\n\n" + stats_text
     await bot.send_message(ADMIN_ID, full_text)
 
 # === ЗАПУСК ===
 async def main():
-    print("Бот запущен (Хуст, СТАРТ, авто-видео, статистика, SSL-фікс)...")
+    print("Бот запущен (Хуст, СТАРТ, авто-видео, статистика с именем, SSL-фікс)...")
     await asyncio.gather(
         dp.start_polling(bot),
         check_pending_payments()
