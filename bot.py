@@ -12,14 +12,19 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 
+# === FASTAPI ===
+from fastapi import FastAPI, Request
+import uvicorn
+
 load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
-ADMIN_ID = 5143085326  # ТВОЙ TELEGRAM ID
+ADMIN_ID = 5143085326  # ТВОЙ ID
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+app = FastAPI()
 
 # === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
@@ -38,7 +43,7 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# === ВИДЕО — ТОЛЬКО ХУСТ ===
+# === ВИДЕО ===
 VIDEOS = {
     'khust': {
         'route1': {'name': '№1', 'url': 'https://youtu.be/mxtsqKmXWSI'},
@@ -51,11 +56,11 @@ VIDEOS = {
 class Cart(StatesGroup):
     viewing_routes = State()
 
-# === КОМАНДА /MYID (для админа) ===
+# === КОМАНДА /MYID ===
 @dp.message(Command('myid'))
 async def myid_command(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("Команда тільки для адміна.")
+        await message.answer("Тільки для адміна.")
         return
     await message.answer(f"Твій ID: {message.from_user.id}")
 
@@ -69,38 +74,23 @@ async def start(message: types.Message, state: FSMContext):
         await manual_paid(message)
         return
 
-    was_here = cursor.execute(
-        "SELECT 1 FROM purchases WHERE user_id=?", (user_id,)
-    ).fetchone()
-
+    was_here = cursor.execute("SELECT 1 FROM purchases WHERE user_id=?", (user_id,)).fetchone()
     if was_here:
-        await message.answer(
-            "З поверненням!\n\nОбери маршрут:",
-            reply_markup=get_routes_keyboard()
-        )
+        await message.answer("З поверненням!\n\nОбери маршрут:", reply_markup=get_routes_keyboard())
         await state.set_state(Cart.viewing_routes)
         return
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="СТАРТ", callback_data="begin_bot")]
-    ])
-    await message.answer(
-        "Вітаю! Це бот з екзаменаційними маршрутами\n\n"
-        "Натисни кнопку нижче — і почнемо",
-        reply_markup=kb
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="СТАРТ", callback_data="begin_bot")]])
+    await message.answer("Вітаю! Це бот з екзаменаційними маршрутами\n\nНатисни кнопку нижче — і почнемо", reply_markup=kb)
 
 # === КНОПКА "СТАРТ" ===
 @dp.callback_query(F.data == "begin_bot")
 async def begin_bot(callback: types.CallbackQuery, state: FSMContext):
     welcome_text = (
         "Вітаю! Це бот з екзаменаційними маршрутами для водіїв — Хуст\n\n"
-        "Як користуватися:\n"
-        "1. Обери маршрут або «Всі маршрути»\n"
-        "2. Оплати будь-якою картою (250 грн за один, 1000 грн за всі)\n"
-        "3. Відео прийде автоматично в цю ж переписку\n\n"
-        "Після оплати — відео доступне лише тобі\n"
-        "Ніхто не бачить твої дані\n\n"
+        "1. Обери маршрут\n"
+        "2. Оплати (250 грн / 1000 грн)\n"
+        "3. Відео прийде автоматично\n\n"
         "Готовий? Обери нижче"
     )
     await callback.message.edit_text(welcome_text)
@@ -147,22 +137,20 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
             (user_id, order_id, invoice_id, routes, amount, time.strftime('%Y-%m-%d %H:%M:%S'))
         )
         conn.commit()
-        print(f"[DB] Saved: {invoice_id}")
     except Exception as e:
         await callback.message.edit_text(f"Помилка: {e}")
-        print(f"[ERROR] {e}")
 
-# === MONO INVOICE (БОЕВОЙ) ===
+# === MONO INVOICE ===
 async def create_mono_invoice(amount: int, order_id: str, desc: str):
     data = {
         'amount': amount * 100,
         'ccy': 980,
         'merchantPaymInfo': {'reference': order_id, 'description': desc},
-        'webHookUrl': 'https://marshrut-bot.onrender.com/webhook',  # БОЕВОЙ URL
+        'webHookUrl': 'https://marshrut-bot.onrender.com/webhook',
         'redirectUrl': f"https://t.me/ExamenPdr_bot?start=paid_{order_id}"
     }
     headers = {'X-Token': MONO_TOKEN, 'Content-Type': 'application/json'}
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+    async with aiohttp.ClientSession() as session:
         async with session.post('https://api.monobank.ua/api/merchant/invoice/create', json=data, headers=headers) as resp:
             result = await resp.json()
             if 'invoiceId' in result:
@@ -172,66 +160,51 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
 # === РУЧНАЯ ПРОВЕРКА ===
 async def manual_paid(message: types.Message):
     paid_id = message.text.split()[-1].strip()
-    row = cursor.execute(
-        "SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?",
-        (paid_id, paid_id)
-    ).fetchone()
-    
+    row = cursor.execute("SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?", (paid_id, paid_id)).fetchone()
     if not row:
-        await message.answer("Замовлення не знайдено. Оплата ще обробляється.")
+        await message.answer("Замовлення не знайдено.")
         return
-    
     if row[1] == 'paid':
         text = "Твої маршрути:\n\n"
         for r in row[0].split(','):
             name = VIDEOS['khust'][r]['name']
             url = VIDEOS['khust'][r]['url']
             text += f"Маршрут {name}: {url}\n"
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Продовжити роботу", callback_data="continue_shopping")]
-        ])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Продовжити роботу", callback_data="continue_shopping")]])
         await message.answer(text + "\n\n", reply_markup=kb)
     else:
-        await message.answer("Оплата ще обробляється. Зачекай 1-2 хв.")
+        await message.answer("Оплата обробляється...")
 
-# === КНОПКА "ПРОДОВЖИТИ РОБОТУ" ===
 @dp.callback_query(F.data == "continue_shopping")
 async def continue_shopping(callback: types.CallbackQuery, state: FSMContext):
     await show_khust_routes(callback.message, state)
 
-# === АВТО-ПРОВЕРКА + СТАТИСТИКА ===
-async def check_pending_payments():
-    while True:
-        await asyncio.sleep(10)
-        rows = cursor.execute("SELECT invoice_id, user_id, routes, amount FROM purchases WHERE status='pending'").fetchall()
-        for invoice_id, user_id, routes, amount in rows:
-            try:
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-                    headers = {'X-Token': MONO_TOKEN}
-                    async with session.get(f'https://api.monobank.ua/api/merchant/invoice/status?invoiceId={invoice_id}', headers=headers) as resp:
-                        data = await resp.json()
-                        if data.get('status') == 'success':
-                            cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
-                            conn.commit()
+# === ВЕБХУК ОТ MONO ===
+@app.post("/webhook")
+async def mono_webhook(request: Request):
+    data = await request.json()
+    invoice_id = data.get('invoiceId')
+    status = data.get('status')
 
-                            text = "Оплата пройшла! Твої маршрути:\n\n"
-                            for r in routes.split(','):
-                                name = VIDEOS['khust'][r]['name']
-                                url = VIDEOS['khust'][r]['url']
-                                text += f"Маршрут {name}: {url}\n"
-                            kb = InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text="Продовжити роботу", callback_data="continue_shopping")]
-                            ])
-                            await bot.send_message(user_id, text + "\n\n", reply_markup=kb)
+    if status == 'success' and invoice_id:
+        row = cursor.execute("SELECT user_id, routes, amount FROM purchases WHERE invoice_id=?", (invoice_id,)).fetchone()
+        if row:
+            user_id, routes, amount = row
+            cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
+            conn.commit()
 
-                            await send_admin_stats(invoice_id, user_id, routes, amount)
-                            print(f"[AUTO] Sent to {user_id}")
-            except Exception as e:
-                if "APPLICATION_DATA_AFTER_CLOSE_NOTIFY" in str(e):
-                    continue
-                print(f"[CHECK] Error: {e}")
+            text = "Оплата пройшла! Твої маршрути:\n\n"
+            for r in routes.split(','):
+                name = VIDEOS['khust'][r]['name']
+                url = VIDEOS['khust'][r]['url']
+                text += f"Маршрут {name}: {url}\n"
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Продовжити роботу", callback_data="continue_shopping")]])
+            await bot.send_message(user_id, text + "\n\n", reply_markup=kb)
+            await send_admin_stats(invoice_id, user_id, routes, amount)
 
-# === СТАТИСТИКА ДЛЯ АДМИНА (с именем и @username) ===
+    return {"status": "ok"}
+
+# === СТАТИСТИКА ===
 async def send_admin_stats(invoice_id, user_id, routes, amount):
     try:
         user = await bot.get_chat(user_id)
@@ -239,63 +212,29 @@ async def send_admin_stats(invoice_id, user_id, routes, amount):
         username = f"@{user.username}" if user.username else ""
         user_str = f"{name} {username}".strip()
     except:
-        user_str = f"ID: {user_id} (немає даних)"
+        user_str = f"ID: {user_id}"
 
-    purchase_detail = f"ID покупки: {invoice_id}\n"
-    purchase_detail += f"Користувач: {user_str}\n"
-    purchase_detail += f"Маршрути: {routes}\n"
-    purchase_detail += f"Сума: {amount} грн\n"
-    purchase_detail += f"Дата: {time.strftime('%d.%m.%Y %H:%M')}"
+    purchase_detail = f"ID покупки: {invoice_id}\nКористувач: {user_str}\nМаршрути: {routes}\nСума: {amount} грн\nДата: {time.strftime('%d.%m.%Y %H:%M')}"
 
     today = date.today()
     first_day_month = today.replace(day=1)
     first_day_year = today.replace(month=1, day=1)
 
-    day_amount = cursor.execute(
-        "SELECT SUM(amount) FROM purchases WHERE status='paid' AND DATE(payment_date) = ?", (today,)
-    ).fetchone()[0] or 0
-    month_amount = cursor.execute(
-        "SELECT SUM(amount) FROM purchases WHERE status='paid' AND DATE(payment_date) >= ?", (first_day_month,)
-    ).fetchone()[0] or 0
-    year_amount = cursor.execute(
-        "SELECT SUM(amount) FROM purchases WHERE status='paid' AND DATE(payment_date) >= ?", (first_day_year,)
-    ).fetchone()[0] or 0
+    day_amount = cursor.execute("SELECT SUM(amount) FROM purchases WHERE status='paid' AND DATE(payment_date) = ?", (today,)).fetchone()[0] or 0
+    month_amount = cursor.execute("SELECT SUM(amount) FROM purchases WHERE status='paid' AND DATE(payment_date) >= ?", (first_day_month,)).fetchone()[0] or 0
+    year_amount = cursor.execute("SELECT SUM(amount) FROM purchases WHERE status='paid' AND DATE(payment_date) >= ?", (first_day_year,)).fetchone()[0] or 0
 
-    stats_text = f"СТАТИСТИКА:\n"
-    stats_text += f"День: {day_amount} грн\n"
-    stats_text += f"Місяць: {month_amount} грн\n"
-    stats_text += f"Рік: {year_amount} грн"
+    stats_text = f"СТАТИСТИКА:\nДень: {day_amount} грн\nМісяць: {month_amount} грн\nРік: {year_amount} грн"
+    if year_amount > 900000: stats_text += f"\nБлизько до ліміту НБУ!"
+    elif year_amount > 500000: stats_text += f"\nЛіміт НБУ — стеж!"
 
-    if year_amount > 900000:
-        stats_text += f"\nБлизько до ліміту НБУ (1 млн грн/рік)! Плануй ФОП."
-    elif year_amount > 500000:
-        stats_text += f"\nЛіміт НБУ (1 млн грн/рік) — стеж за доходами."
-
-    full_text = purchase_detail + "\n\n" + stats_text
-    await bot.send_message(ADMIN_ID, full_text)
-
-# === РЕГИСТРАЦИЯ WEBHOOK В MONO (ПРАВИЛЬНОЕ МЕСТО!) ===
-async def register_webhook():
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {'X-Token': MONO_TOKEN, 'Content-Type': 'application/json'}
-            data = {
-                'webHookUrl': 'https://marshrut-bot.onrender.com/webhook'
-            }
-            async with session.post('https://api.monobank.ua/api/merchant/webhook/set', json=data, headers=headers) as resp:
-                result = await resp.json()
-                print(f"[WEBHOOK] Registration: {result}")
-    except Exception as e:
-        print(f"[WEBHOOK] Error: {e}")
+    await bot.send_message(ADMIN_ID, purchase_detail + "\n\n" + stats_text)
 
 # === ЗАПУСК ===
-async def main():
-    print("Бот запущен (БОЕВОЙ РЕЖИМ, webhook, статистика)...")
-    await register_webhook()  # Теперь видит функцию!
-    await asyncio.gather(
-        dp.start_polling(bot),
-        check_pending_payments()
-    )
+async def run_bot():
+    await dp.start_polling(bot)
 
-if __name__ == '__main__':
-    asyncio.run(main())
+if __name__ == "__main__":
+    import threading
+    threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8000), daemon=True).start()
+    asyncio.run(run_bot())
