@@ -3,7 +3,7 @@ import asyncio
 import aiohttp
 import sqlite3
 import time
-from datetime import date, timedelta
+from datetime import date
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -16,12 +16,12 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
-ADMIN_ID = 5143085326  # ← ЗАМЕНИ НА ТВОЙ TELEGRAM ID (узнай через @userinfobot)
+ADMIN_ID = 123456789  # ← ЗАМЕНИ НА ТВОЙ TELEGRAM ID (узнай через @userinfobot)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === БАЗА ДАННЫХ (добавили amount и payment_date) ===
+# === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -38,7 +38,7 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# === ВИДЕО ===
+# === ВИДЕО — ТОЛЬКО ХУСТ ===
 VIDEOS = {
     'khust': {
         'route1': {'name': '№1', 'url': 'https://youtu.be/mxtsqKmXWSI'},
@@ -170,7 +170,7 @@ async def manual_paid(message: types.Message):
     ).fetchone()
     
     if not row:
-        await message.answer("Замовлення не знайдно. Оплата ще обробляється.")
+        await message.answer("Замовлення не знайдено. Оплата ще обробляється.")
         return
     
     if row[1] == 'paid':
@@ -191,25 +191,22 @@ async def manual_paid(message: types.Message):
 async def continue_shopping(callback: types.CallbackQuery, state: FSMContext):
     await show_khust_routes(callback.message, state)
 
-# === АВТО-ПРОВЕРКА + СТАТИСТИКА ДЛЯ АДМИНА ===
+# === АВТО-ПРОВЕРКА + СТАТИСТИКА + ФИКС SSL ===
 async def check_pending_payments():
     while True:
         await asyncio.sleep(10)
         rows = cursor.execute("SELECT invoice_id, user_id, routes, amount FROM purchases WHERE status='pending'").fetchall()
         for invoice_id, user_id, routes, amount in rows:
             try:
-                async with aiohttp.ClientSession() as session:
+                # ФИКС SSL: таймаут + корректное закрытие
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                     headers = {'X-Token': MONO_TOKEN}
                     async with session.get(f'https://api.monobank.ua/api/merchant/invoice/status?invoiceId={invoice_id}', headers=headers) as resp:
                         data = await resp.json()
                         if data.get('status') == 'success':
-                            # Обновляем статус
-                            cursor.execute(
-                                "UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,)
-                            )
+                            cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
                             conn.commit()
 
-                            # Отправляем видео клиенту
                             text = "Оплата пройшла! Твої маршрути:\n\n"
                             for r in routes.split(','):
                                 name = VIDEOS['khust'][r]['name']
@@ -220,23 +217,22 @@ async def check_pending_payments():
                             ])
                             await bot.send_message(user_id, text + "\n\n", reply_markup=kb)
 
-                            # СТАТИСТИКА ДЛЯ АДМИНА
                             await send_admin_stats(invoice_id, user_id, routes, amount)
-
                             print(f"[AUTO] Sent to {user_id}")
             except Exception as e:
+                # Игнорируем SSL-ошибки закрытия
+                if "APPLICATION_DATA_AFTER_CLOSE_NOTIFY" in str(e):
+                    continue
                 print(f"[CHECK] Error: {e}")
 
-# === СТАТИСТИКА (кто, что, когда, сколько) ===
+# === СТАТИСТИКА ДЛЯ АДМИНА ===
 async def send_admin_stats(invoice_id, user_id, routes, amount):
-    # Детали покупки
-    purchase_detail = f"🆔 ID покупки: {invoice_id}\n"
-    purchase_detail += f"👤 Пользователь: {user_id}\n"
-    purchase_detail += f"🛣 Маршруты: {routes}\n"
-    purchase_detail += f"💰 Сумма: {amount} грн\n"
-    purchase_detail += f"📅 Дата: {time.strftime('%d.%m.%Y %H:%M')}"
+    purchase_detail = f"ID покупки: {invoice_id}\n"
+    purchase_detail += f"Пользователь: {user_id}\n"
+    purchase_detail += f"Маршруты: {routes}\n"
+    purchase_detail += f"Сумма: {amount} грн\n"
+    purchase_detail += f"Дата: {time.strftime('%d.%m.%Y %H:%M')}"
 
-    # Общая статистика
     today = date.today()
     first_day_month = today.replace(day=1)
     first_day_year = today.replace(month=1, day=1)
@@ -251,24 +247,22 @@ async def send_admin_stats(invoice_id, user_id, routes, amount):
         "SELECT SUM(amount) FROM purchases WHERE status='paid' AND DATE(payment_date) >= ?", (first_day_year,)
     ).fetchone()[0] or 0
 
-    stats_text = f"📊 СТАТИСТИКА:\n"
-    stats_text += f"💳 День: {day_amount} грн\n"
-    stats_text += f"📅 Месяц: {month_amount} грн\n"
-    stats_text += f"📆 Год: {year_amount} грн"
+    stats_text = f"СТАТИСТИКА:\n"
+    stats_text += f"День: {day_amount} грн\n"
+    stats_text += f"Месяц: {month_amount} грн\n"
+    stats_text += f"Год: {year_amount} грн"
 
-    # Проверка лимита НБУ (1 млн грн/год для физлица)
     if year_amount > 900000:
-        stats_text += f"\n⚠️ Близко к лимиту НБУ (1 млн грн/год)! Планируй ФОП."
+        stats_text += f"\nБлизко к лимиту НБУ (1 млн грн/год)! Планируй ФОП."
     elif year_amount > 500000:
-        stats_text += f"\n🟡 Лимит НБУ (1 млн грн/год) — следи за расходами."
+        stats_text += f"\nЛимит НБУ (1 млн грн/год) — следи за расходами."
 
-    # Отправляем админу
     full_text = purchase_detail + "\n\n" + stats_text
     await bot.send_message(ADMIN_ID, full_text)
 
 # === ЗАПУСК ===
 async def main():
-    print("Бот запущен (Хуст, кнопка СТАРТ, авто-видео, админ-статистика)...")
+    print("Бот запущен (Хуст, СТАРТ, авто-видео, статистика, SSL-фікс)...")
     await asyncio.gather(
         dp.start_polling(bot),
         check_pending_payments()
