@@ -19,6 +19,7 @@ MONO_TOKEN = os.getenv('MONO_TOKEN')
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -33,85 +34,85 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# === ВИДЕО ПО ГОРОДАМ ===
+# === ВИДЕО — ТОЛЬКО ХУСТ ===
 VIDEOS = {
     'khust': {
         'route1': {'name': '№1', 'url': 'https://youtu.be/mxtsqKmXWSI'},
         'route8': {'name': '№8', 'url': 'https://youtu.be/7VwtAAaQWE8'},
         'route6': {'name': '№6', 'url': 'https://youtu.be/RnpOEKIddZw'},
         'route2': {'name': '№2', 'url': 'https://youtu.be/RllCGT6dOPc'},
-    },
-    # Добавь другие города по аналогии
+    }
 }
 
 class Cart(StatesGroup):
-    choosing_city = State()
     viewing_routes = State()
-    paying = State()
 
-# === СТАРТ ===
+# === СТАРТ С КНОПКОЙ "СТАРТ" ===
 @dp.message(Command('start'))
 async def start(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
     args = message.text.split()
+
     if len(args) > 1 and args[1].startswith('paid_'):
         await manual_paid(message)
         return
 
+    was_here = cursor.execute(
+        "SELECT 1 FROM purchases WHERE user_id=?", (user_id,)
+    ).fetchone()
+
+    if was_here:
+        await show_khust_routes(message, state)
+        return
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Хуст", callback_data="city_khust")],
-        [InlineKeyboardButton(text="Київ", callback_data="city_kyiv")],
-        [InlineKeyboardButton(text="Львів", callback_data="city_lviv")],
-        [InlineKeyboardButton(text="Одеса", callback_data="city_odesa")],
+        [InlineKeyboardButton(text="СТАРТ", callback_data="begin_bot")]
     ])
     await message.answer(
-        "Обери місто:",
+        "Вітаю! Це бот з екзаменаційними маршрутами\n\n"
+        "Натисни кнопку нижче — і почнемо",
         reply_markup=kb
     )
-    await state.set_state(Cart.choosing_city)
 
-# === ВЫБОР ГОРОДА ===
-@dp.callback_query(F.data.startswith("city_"))
-async def choose_city(callback: types.CallbackQuery, state: FSMContext):
-    city = callback.data.split("_")[1]
-    await state.update_data(city=city)
-
-    if city not in VIDEOS:
-        await callback.message.edit_text("Маршрути для цього міста ще не додані.")
-        return
-
-    routes = VIDEOS[city]
-    kb = []
-    for key, video in routes.items():
-        kb.append([InlineKeyboardButton(text=f"Маршрут {video['name']} — 250 грн", callback_data=f"buy_{city}_{key}")])
-    kb.append([InlineKeyboardButton(text="Всі маршрути — 1000 грн", callback_data=f"buy_{city}_all")])
-    kb.append([InlineKeyboardButton(text="Назад до міст", callback_data="back_to_cities")])
-
-    await callback.message.edit_text(
-        f"Маршрути — {city.title()}\n\nОбери:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+# === КНОПКА "СТАРТ" → МАРШРУТЫ ХУСТА ===
+@dp.callback_query(F.data == "begin_bot")
+async def begin_bot(callback: types.CallbackQuery, state: FSMContext):
+    welcome_text = (
+        "Вітаю! Це бот з екзаменаційними маршрутами для водіїв — Хуст\n\n"
+        "Як користуватися:\n"
+        "1. Обери маршрут або «Всі маршрути»\n"
+        "2. Оплати будь-якою картою (250 грн за один, 1000 грн за всі)\n"
+        "3. Відео прийде автоматично в цю ж переписку\n\n"
+        "Після оплати — відео доступне лише тобі\n"
+        "Ніхто не бачить твої дані\n\n"
+        "Готовий? Обери нижче"
     )
+    await callback.message.edit_text(welcome_text)
+    await show_khust_routes(callback.message, state)
+
+# === ВЫВОД МАРШРУТОВ ХУСТА ===
+async def show_khust_routes(message: types.Message | types.CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Маршрут №1 — 250 грн", callback_data="buy_khust_route1")],
+        [InlineKeyboardButton(text="Маршрут №8 — 250 грн", callback_data="buy_khust_route8")],
+        [InlineKeyboardButton(text="Маршрут №6 — 250 грн", callback_data="buy_khust_route6")],
+        [InlineKeyboardButton(text="Маршрут №2 — 250 грн", callback_data="buy_khust_route2")],
+        [InlineKeyboardButton(text="Всі 4 маршрути — 1000 грн", callback_data="buy_khust_all")],
+    ])
+    text = "Маршрути — Хуст\n\nОбери:"
+    if isinstance(message, types.CallbackQuery):
+        await message.message.edit_text(text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=kb)
     await state.set_state(Cart.viewing_routes)
 
-# === НАЗАД К ГОРОДАМ ===
-@dp.callback_query(F.data == "back_to_cities")
-async def back_to_cities(callback: types.CallbackQuery, state: FSMContext):
-    await start(callback.message, state)
-
 # === ПОКУПКА ===
-@dp.callback_query(F.data.startswith("buy_"))
+@dp.callback_query(F.data.startswith("buy_khust_"))
 async def buy(callback: types.CallbackQuery, state: FSMContext):
-    data = callback.data.split("_")
-    city = data[1]
-    route_key = data[2] if len(data) > 2 else None
-
-    user_data = await state.get_data()
-    if user_data.get('city') != city:
-        await callback.answer("Помилка. Почни заново: /start")
-        return
-
+    route_key = callback.data.split("_")[-1]
     amount = 1000 if route_key == "all" else 250
-    desc = f"Всі маршрути — {city.title()}" if route_key == "all" else f"Маршрут {VIDEOS[city][route_key]['name']} — {city.title()}"
-    routes = ",".join(VIDEOS[city].keys()) if route_key == "all" else route_key
+    desc = "Всі 4 маршрути — Хуст" if route_key == "all" else f"Маршрут {VIDEOS['khust'][route_key]['name']} — Хуст"
+    routes = ",".join(VIDEOS['khust'].keys()) if route_key == "all" else route_key
 
     user_id = callback.from_user.id
     order_id = f"{user_id}_{int(time.time())}"
@@ -132,7 +133,7 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text(f"Помилка: {e}")
         print(f"[ERROR] {e}")
 
-# === MONO ===
+# === MONO INVOICE ===
 async def create_mono_invoice(amount: int, order_id: str, desc: str):
     data = {
         'amount': amount * 100,
@@ -149,7 +150,7 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
                 return result['invoiceId']
             raise Exception(f"Mono error: {result}")
 
-# === РУЧНАЯ ПРОВЕРКА ===
+# === РУЧНАЯ ПРОВЕРКА ОПЛАТЫ ===
 async def manual_paid(message: types.Message):
     paid_id = message.text.split()[-1].strip()
     row = cursor.execute(
@@ -163,18 +164,15 @@ async def manual_paid(message: types.Message):
     
     if row[1] == 'paid':
         text = "Твої маршрути:\n\n"
-        city_routes = row[0].split(',')
-        # Определяем город по первому маршруту
-        city = next((c for c, routes in VIDEOS.items() if city_routes[0] in routes), 'khust')
-        for r in city_routes:
-            name = VIDEOS[city][r]['name']
-            url = VIDEOS[city][r]['url']
+        for r in row[0].split(','):
+            name = VIDEOS['khust'][r]['name']
+            url = VIDEOS['khust'][r]['url']
             text += f"Маршрут {name}: {url}\n"
         await message.answer(text)
     else:
         await message.answer("Оплата ще обробляється. Зачекай 1-2 хв.")
 
-# === АВТО-ПРОВЕРКА ===
+# === АВТО-ПРОВЕРКА ОПЛАТ ===
 async def check_pending_payments():
     while True:
         await asyncio.sleep(10)
@@ -188,19 +186,19 @@ async def check_pending_payments():
                         if data.get('status') == 'success':
                             cursor.execute("UPDATE purchases SET status='paid' WHERE invoice_id=?", (invoice_id,))
                             conn.commit()
-                            city = next((c for c, r in VIDEOS.items() if routes.split(',')[0] in r), 'khust')
                             text = "Оплата пройшла! Твої маршрути:\n\n"
                             for r in routes.split(','):
-                                name = VIDEOS[city][r]['name']
-                                url = VIDEOS[city][r]['url']
+                                name = VIDEOS['khust'][r]['name']
+                                url = VIDEOS['khust'][r]['url']
                                 text += f"Маршрут {name}: {url}\n"
                             await bot.send_message(user_id, text)
                             print(f"[AUTO] Sent to {user_id}")
             except Exception as e:
                 print(f"[CHECK] Error: {e}")
 
+# === ЗАПУСК ===
 async def main():
-    print("Бот запущен...")
+    print("Бот запущен (Хуст, кнопка СТАРТ, авто-видео)...")
     await asyncio.gather(
         dp.start_polling(bot),
         check_pending_payments()
