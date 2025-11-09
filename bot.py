@@ -201,6 +201,27 @@ async def continue_shopping(callback: types.CallbackQuery, state: FSMContext):
 
 # === АВТО-ПРОВЕРКА + СТАТИСТИКА ===
 async def check_pending_payments():
+    # === РЕГИСТРАЦИЯ WEBHOOK В MONO (один раз при запуске) ===
+async def register_webhook():
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {'X-Token': MONO_TOKEN, 'Content-Type': 'application/json'}
+            data = {
+                'webHookUrl': 'https://marshrut-bot.onrender.com/webhook'
+            }
+            async with session.post('https://api.monobank.ua/api/merchant/webhook/set', json=data, headers=headers) as resp:
+                result = await resp.json()
+                print(f"[WEBHOOK] Registration: {result}")
+    except Exception as e:
+        print(f"[WEBHOOK] Error: {e}")
+
+# === ЗАПУСК ===
+async def main():
+    print("Бот запущен (БОЕВОЙ РЕЖИМ, webhook, статистика)...")
+    await register_webhook()  # Теперь видит функцию!
+    await asyncio.gather(
+        dp.start_polling(bot),
+        check_pending_payments()
     while True:
         await asyncio.sleep(10)
         rows = cursor.execute("SELECT invoice_id, user_id, routes, amount FROM purchases WHERE status='pending'").fetchall()
@@ -274,13 +295,7 @@ async def send_admin_stats(invoice_id, user_id, routes, amount):
     full_text = purchase_detail + "\n\n" + stats_text
     await bot.send_message(ADMIN_ID, full_text)
 
-# === ЗАПУСК ===
-async def main():
-    print("Бот запущен (БОЕВОЙ РЕЖИМ, webhook, статистика)...")
-    await register_webhook()  # РЕГИСТРАЦИЯ WEBHOOK ПРИ ЗАПУСКЕ
-    await asyncio.gather(
-        dp.start_polling(bot),
-        check_pending_payments()
+
     )
 
 if __name__ == '__main__':
