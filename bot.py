@@ -158,7 +158,7 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
         'amount': amount * 100,
         'ccy': 980,
         'merchantPaymInfo': {'reference': order_id, 'description': desc},
-        'webHookUrl': 'https://webhook.site/873bf366-974d-4492-b93c-fe815662bcd9',
+        'webHookUrl': 'https://marshrut-bot.onrender.com/webhook',  # БОЕВОЙ URL
         'redirectUrl': f"https://t.me/ExamenPdr_bot?start=paid_{order_id}"
     }
     headers = {'X-Token': MONO_TOKEN, 'Content-Type': 'application/json'}
