@@ -13,14 +13,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# === ТОКЕНЫ ===
-BOT_TOKEN = os.getenv('BOT_TOKEN')  # ← Обновится в Render
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -35,7 +33,6 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# === ВИДЕО ===
 VIDEOS = {
     'route1': {'name': '№1', 'url': 'https://youtu.be/mxtsqKmXWSI'},
     'route8': {'name': '№8', 'url': 'https://youtu.be/7VwtAAaQWE8'},
@@ -47,7 +44,6 @@ class Cart(StatesGroup):
     viewing = State()
     paying = State()
 
-# === СТАРТ ===
 @dp.message(Command('start'))
 async def start(message: types.Message, state: FSMContext):
     args = message.text.split()
@@ -65,7 +61,6 @@ async def start(message: types.Message, state: FSMContext):
     await message.answer("Экзаменаційні маршрути — Хуст\n\nОбери маршрут:", reply_markup=kb)
     await state.set_state(Cart.viewing)
 
-# === ПОКУПКА ===
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy(callback: types.CallbackQuery, state: FSMContext):
     route_key = callback.data.split("_")[1]
@@ -92,7 +87,6 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer(f"Помилка: {e}")
         print(f"[ERROR] {e}")
 
-# === MONO INVOICE ===
 async def create_mono_invoice(amount: int, order_id: str, desc: str):
     data = {
         'amount': amount * 100,
@@ -109,22 +103,25 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
                 return result['invoiceId']
             raise Exception(f"Mono error: {result}")
 
-# === РУЧНАЯ КОМАНДА ===
+# === ФИКС: БЕЗ ОШИБОК ===
 async def manual_paid(message: types.Message):
     paid_id = message.text.split()[-1]
     row = cursor.execute(
         "SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?",
         (paid_id, paid_id)
     ).fetchone()
-    if row and row[1] == 'paid':
-        text = "Твої маршрути:\n\n"
-        for r in row[0].split(','):
-            text += f"{VIDEOS[r]['name']}: {VIDEOS[r]['url']}\n"
-        await message.answer(text)
+    
+    if row:
+        if row[1] == 'paid':
+            text = "Твої маршрути:\n\n"
+            for r in row[0].split(','):
+                text += f"{VIDEOS[r]['name']}: {VIDEOS[r]['url']}\n"
+            await message.answer(text)
+        else:
+            await message.answer("Оплата ще обробляється. Зачекай 1-2 хв.")
     else:
-        await message.answer("Оплата не підтверджена. Оплати ще раз.")
+        await message.answer("Замовлення не знайдено. Спробуй ще раз.")
 
-# === АВТО-ПРОВЕРКА ОПЛАТ ===
 async def check_pending_payments():
     while True:
         await asyncio.sleep(10)
@@ -146,7 +143,6 @@ async def check_pending_payments():
             except Exception as e:
                 print(f"[CHECK] Error: {e}")
 
-# === ЗАПУСК ===
 async def main():
     print("Бот запущен (polling + авто-проверка)...")
     await asyncio.gather(
