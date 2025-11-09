@@ -16,7 +16,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
-ADMIN_ID = 123456789  # ← ЗАМЕНИ НА ТВОЙ TELEGRAM ID (узнай через @userinfobot)
+ADMIN_ID = 5143085326  # ← ЗАМЕНИ НА ТВОЙ TELEGRAM ID (узнай через @userinfobot)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -38,7 +38,7 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# === ВИДЕО — ТОЛЬКО ХУСТ ===
+# === ВИДЕО ===
 VIDEOS = {
     'khust': {
         'route1': {'name': '№1', 'url': 'https://youtu.be/mxtsqKmXWSI'},
@@ -50,6 +50,14 @@ VIDEOS = {
 
 class Cart(StatesGroup):
     viewing_routes = State()
+
+# === КОМАНДА /MYID (для ADMIN_ID) ===
+@dp.message(Command('myid'))
+async def myid_command(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Эта команда только для админа.")
+        return
+    await message.answer(f"Твой ID: {message.from_user.id}")
 
 # === СТАРТ ===
 @dp.message(Command('start'))
@@ -154,7 +162,7 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
         'redirectUrl': f"https://t.me/ExamenPdr_bot?start=paid_{order_id}"
     }
     headers = {'X-Token': MONO_TOKEN, 'Content-Type': 'application/json'}
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         async with session.post('https://api.monobank.ua/api/merchant/invoice/create', json=data, headers=headers) as resp:
             result = await resp.json()
             if 'invoiceId' in result:
@@ -191,7 +199,7 @@ async def manual_paid(message: types.Message):
 async def continue_shopping(callback: types.CallbackQuery, state: FSMContext):
     await show_khust_routes(callback.message, state)
 
-# === АВТО-ПРОВЕРКА + СТАТИСТИКА + ФИКС SSL ===
+# === АВТО-ПРОВЕРКА + СТАТИСТИКА ===
 async def check_pending_payments():
     while True:
         await asyncio.sleep(10)
@@ -223,9 +231,8 @@ async def check_pending_payments():
                     continue
                 print(f"[CHECK] Error: {e}")
 
-# === СТАТИСТИКА ДЛЯ АДМИНА (с именем и @username) ===
+# === СТАТИСТИКА ===
 async def send_admin_stats(invoice_id, user_id, routes, amount):
-    # Получаем данные пользователя
     try:
         user = await bot.get_chat(user_id)
         name = user.first_name or "Без імені"
