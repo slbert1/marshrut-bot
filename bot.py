@@ -98,14 +98,15 @@ async def begin_bot(callback: types.CallbackQuery, state: FSMContext):
 
 # === КНОПКИ МАРШРУТОВ ===
 def get_routes_keyboard():
+    price_single = os.getenv('PRICE_SINGLE', '250')  # по умолчанию 250
+    price_all = os.getenv('PRICE_ALL', '1000')       # по умолчанию 1000
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Маршрут №1 — 250 грн", callback_data="buy_khust_route1")],
-        [InlineKeyboardButton(text="Маршрут №8 — 250 грн", callback_data="buy_khust_route8")],
-        [InlineKeyboardButton(text="Маршрут №6 — 250 грн", callback_data="buy_khust_route6")],
-        [InlineKeyboardButton(text="Маршрут №2 — 250 грн", callback_data="buy_khust_route2")],
-        [InlineKeyboardButton(text="Всі 4 маршрути — 1000 грн", callback_data="buy_khust_all")],
+        [InlineKeyboardButton(text=f"Маршрут №1 — {price_single} грн", callback_data="buy_khust_route1")],
+        [InlineKeyboardButton(text=f"Маршрут №8 — {price_single} грн", callback_data="buy_khust_route8")],
+        [InlineKeyboardButton(text=f"Маршрут №6 — {price_single} грн", callback_data="buy_khust_route6")],
+        [InlineKeyboardButton(text=f"Маршрут №2 — {price_single} грн", callback_data="buy_khust_route2")],
+        [InlineKeyboardButton(text=f"Всі 4 маршрути — {price_all} грн", callback_data="buy_khust_all")],
     ])
-
 async def show_khust_routes(message: types.Message | types.CallbackQuery, state: FSMContext):
     kb = get_routes_keyboard()
     text = "Маршрути — Хуст\n\nОбери:"
@@ -119,7 +120,11 @@ async def show_khust_routes(message: types.Message | types.CallbackQuery, state:
 @dp.callback_query(F.data.startswith("buy_khust_"))
 async def buy(callback: types.CallbackQuery, state: FSMContext):
     route_key = callback.data.split("_")[-1]
-    amount = 1000 if route_key == "all" else 250
+    
+    price_single = int(os.getenv('PRICE_SINGLE', '250'))
+    price_all = int(os.getenv('PRICE_ALL', '1000'))
+    
+    amount = price_all if route_key == "all" else price_single
     desc = "Всі 4 маршрути — Хуст" if route_key == "all" else f"Маршрут {VIDEOS['khust'][route_key]['name']} — Хуст"
     routes = ",".join(VIDEOS['khust'].keys()) if route_key == "all" else route_key
 
