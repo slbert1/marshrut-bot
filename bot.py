@@ -13,13 +13,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+# === ТОКЕНЫ ===
+BOT_TOKEN = os.getenv('BOT_TOKEN')  # ← Обновится в Render
 MONO_TOKEN = os.getenv('MONO_TOKEN')
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === БАЗА ===
+# === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -46,6 +47,7 @@ class Cart(StatesGroup):
     viewing = State()
     paying = State()
 
+# === СТАРТ ===
 @dp.message(Command('start'))
 async def start(message: types.Message, state: FSMContext):
     args = message.text.split()
@@ -63,6 +65,7 @@ async def start(message: types.Message, state: FSMContext):
     await message.answer("Экзаменаційні маршрути — Хуст\n\nОбери маршрут:", reply_markup=kb)
     await state.set_state(Cart.viewing)
 
+# === ПОКУПКА ===
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy(callback: types.CallbackQuery, state: FSMContext):
     route_key = callback.data.split("_")[1]
@@ -89,13 +92,14 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer(f"Помилка: {e}")
         print(f"[ERROR] {e}")
 
+# === MONO INVOICE ===
 async def create_mono_invoice(amount: int, order_id: str, desc: str):
     data = {
         'amount': amount * 100,
         'ccy': 980,
         'merchantPaymInfo': {'reference': order_id, 'description': desc},
         'webHookUrl': 'https://webhook.site/873bf366-974d-4492-b93c-fe815662bcd9',
-        'redirectUrl': f"https://t.me/MarshrutKhust_bot?start=paid_{order_id}"
+        'redirectUrl': f"https://t.me/ExamenPdr_bot?start=paid_{order_id}"
     }
     headers = {'X-Token': MONO_TOKEN, 'Content-Type': 'application/json'}
     async with aiohttp.ClientSession() as session:
@@ -105,6 +109,7 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
                 return result['invoiceId']
             raise Exception(f"Mono error: {result}")
 
+# === РУЧНАЯ КОМАНДА ===
 async def manual_paid(message: types.Message):
     paid_id = message.text.split()[-1]
     row = cursor.execute(
@@ -117,9 +122,9 @@ async def manual_paid(message: types.Message):
             text += f"{VIDEOS[r]['name']}: {VIDEOS[r]['url']}\n"
         await message.answer(text)
     else:
-        await message.answer("Оплата не підтверджена.")
+        await message.answer("Оплата не підтверджена. Оплати ще раз.")
 
-# === АВТО-ПРОВЕРКА ===
+# === АВТО-ПРОВЕРКА ОПЛАТ ===
 async def check_pending_payments():
     while True:
         await asyncio.sleep(10)
@@ -141,8 +146,9 @@ async def check_pending_payments():
             except Exception as e:
                 print(f"[CHECK] Error: {e}")
 
+# === ЗАПУСК ===
 async def main():
-    print("Бот запущен...")
+    print("Бот запущен (polling + авто-проверка)...")
     await asyncio.gather(
         dp.start_polling(bot),
         check_pending_payments()
