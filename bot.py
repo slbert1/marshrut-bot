@@ -276,7 +276,8 @@ async def send_admin_stats(invoice_id, user_id, routes, amount):
 
 # === ЗАПУСК ===
 async def main():
-    print("Бот запущен (Хуст, СТАРТ, авто-видео, статистика с именем, SSL-фікс)...")
+    print("Бот запущен (БОЕВОЙ РЕЖИМ, webhook, статистика)...")
+    await register_webhook()  # РЕГИСТРАЦИЯ WEBHOOK ПРИ ЗАПУСКЕ
     await asyncio.gather(
         dp.start_polling(bot),
         check_pending_payments()
