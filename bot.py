@@ -77,12 +77,13 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
             f"Оплати {desc} ({amount} грн):\nhttps://pay.monobank.ua/{invoice_id}\n\n(Будь-яка карта)",
             disable_web_page_preview=True
         )
+        # Сохраняем order_id и invoice_id
         cursor.execute(
             "INSERT OR REPLACE INTO purchases (user_id, order_id, invoice_id, routes, status) VALUES (?, ?, ?, ?, 'pending')",
             (user_id, order_id, invoice_id, routes)
         )
         conn.commit()
-        print(f"[DB] Saved: {invoice_id}")
+        print(f"[DB] Saved: order_id={order_id}, invoice_id={invoice_id}")
     except Exception as e:
         await callback.message.answer(f"Помилка: {e}")
         print(f"[ERROR] {e}")
@@ -103,24 +104,26 @@ async def create_mono_invoice(amount: int, order_id: str, desc: str):
                 return result['invoiceId']
             raise Exception(f"Mono error: {result}")
 
-# === ФИКС: БЕЗ ОШИБОК ===
+# === ИДЕАЛЬНАЯ РУЧНАЯ КОМАНДА ===
 async def manual_paid(message: types.Message):
-    paid_id = message.text.split()[-1]
+    paid_id = message.text.split()[-1].strip()
+    
     row = cursor.execute(
         "SELECT routes, status FROM purchases WHERE invoice_id=? OR order_id=?",
         (paid_id, paid_id)
     ).fetchone()
     
-    if row:
-        if row[1] == 'paid':
-            text = "Твої маршрути:\n\n"
-            for r in row[0].split(','):
-                text += f"{VIDEOS[r]['name']}: {VIDEOS[r]['url']}\n"
-            await message.answer(text)
-        else:
-            await message.answer("Оплата ще обробляється. Зачекай 1-2 хв.")
+    if not row:
+        await message.answer("Замовлення не знайдено. Оплата ще обробляється або не була створена.")
+        return
+    
+    if row[1] == 'paid':
+        text = "Твої маршрути:\n\n"
+        for r in row[0].split(','):
+            text += f"{VIDEOS[r]['name']}: {VIDEOS[r]['url']}\n"
+        await message.answer(text)
     else:
-        await message.answer("Замовлення не знайдено. Спробуй ще раз.")
+        await message.answer("Оплата ще обробляється. Зачекай 1-2 хв і натисни кнопку «Повернутися» ще раз.")
 
 async def check_pending_payments():
     while True:
