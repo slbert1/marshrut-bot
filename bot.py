@@ -14,15 +14,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# === ОБЯЗАТЕЛЬНО ДОЛЖНЫ БЫТЬ В .env ===
+# === ЦЕНЫ ТОЛЬКО ИЗ RENDER Environment — БЕЗ УМОЛЧАНИЙ! ===
+PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))  # ОБЯЗАТЕЛЬНО в Render!
+PRICE_ALL = int(os.getenv('PRICE_ALL'))        # ОБЯЗАТЕЛЬНО в Render!
+
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
-PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))   # ОБЯЗАТЕЛЬНО!
-PRICE_ALL = int(os.getenv('PRICE_ALL'))         # ОБЯЗАТЕЛЬНО!
 
-# Проверка на запуск
+# === ПРОВЕРКА НАЛИЧИЯ ВСЕХ ПЕРЕМЕННЫХ ===
 if not all([BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL]):
-    raise ValueError("Ошибка: Заполни BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL в .env!")
+    raise ValueError("Ошибка: BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL — обязательны в Render Environment!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -56,42 +57,69 @@ VIDEOS = {
 class Order(StatesGroup):
     waiting_card = State()
 
+# === КЛАВИАТУРА — ЦЕНЫ ИЗ env ===
+def get_routes_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"Маршрут №1 — {PRICE_SINGLE} грн", callback_data="buy_khust_route1")],
+        [InlineKeyboardButton(text=f"Маршрут №8 — {PRICE_SINGLE} грн", callback_data="buy_khust_route8")],
+        [InlineKeyboardButton(text=f"Маршрут №6 — {PRICE_SINGLE} грн", callback_data="buy_khust_route6")],
+        [InlineKeyboardButton(text=f"Маршрут №2 — {PRICE_SINGLE} грн", callback_data="buy_khust_route2")],
+        [InlineKeyboardButton(text=f"Всі 4 маршрути — {PRICE_ALL} грн", callback_data="buy_khust_all")],
+    ])
+
 # === СТАРТ ===
 @dp.message(Command("start"))
-async def start(message: types.Message, state: FSMContext):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"Маршрут №1 — {PRICE_SINGLE} грн", callback_data="buy_single")],
-        [InlineKeyboardButton(text=f"Всі маршрути — {PRICE_ALL} грн", callback_data="buy_all")],
-    ])
+async def start(message: types.Message):
     await message.answer(
         f"Обери маршрут:\n\n"
-        f"1 маршрут — {PRICE_SINGLE} грн\n"
-        f"Всі 4 — {PRICE_ALL} грн",
-        reply_markup=kb
+        f"Кожен — {PRICE_SINGLE} грн\n"
+        f"Всі 4 — {PRICE_ALL} грн\n\n"
+        f"Оплата на карту — відео миттєво!",
+        reply_markup=get_routes_keyboard()
     )
 
 # === ПОКУПКА ===
-@dp.callback_query(F.data.in_({"buy_single", "buy_all"}))
-async def buy_route(callback: types.CallbackQuery, state: FSMContext):
-    amount = PRICE_SINGLE if callback.data == "buy_single" else PRICE_ALL
-    routes = "khust_route1" if amount == PRICE_SINGLE else ",".join(VIDEOS.keys())
+@dp.callback_query(F.data.startswith("buy_"))
+async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
+    action = callback.data
+
+    routes_map = {
+        "buy_khust_route1": "khust_route1",
+        "buy_khust_route8": "khust_route8",
+        "buy_khust_route6": "khust_route6",
+        "buy_khust_route2": "khust_route2",
+        "buy_khust_all": "khust_route1,khust_route8,khust_route6,khust_route2"
+    }
+
+    routes = routes_map[action]
+    amount = PRICE_ALL if action == "buy_khust_all" else PRICE_SINGLE
 
     await state.update_data(amount=amount, routes=routes)
+
     await callback.message.edit_text(
-        f"Введи **номер своєї карти** (16 цифр, наприклад: 4441111111111111)\n"
-        f"З неї спишуться {amount} грн",
+        f"Введи номер карти (з пробілами):\n"
+        f"`4441 1111 1111 1111`\n"
+        f"Спишеться **{amount} грн**",
         parse_mode="Markdown"
     )
     await state.set_state(Order.waiting_card)
 
-# === КАРТА ===
+# === КАРТА С ПРОБЕЛАМИ ===
 @dp.message(Order.waiting_card)
 async def get_card(message: types.Message, state: FSMContext):
-    card = message.text.strip().replace(" ", "")
+    raw_card = message.text.strip()
+    card = raw_card.replace(" ", "")
+    
     if not (card.isdigit() and len(card) == 16):
-        await message.answer("Невірний формат. Введи 16 цифр без пробілів.")
+        await message.answer(
+            "Невірний формат!\n"
+            "Введи 16 цифр з пробілами:\n"
+            "`4441 1111 1111 1111`",
+            parse_mode="Markdown"
+        )
         return
 
+    formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
     data = await state.get_data()
     amount = data['amount']
     routes = data['routes']
@@ -105,15 +133,17 @@ async def get_card(message: types.Message, state: FSMContext):
     conn.commit()
 
     await message.answer(
-        f"Оплати **{amount} грн** на карту:\n"
+        f"Оплата: **{amount} грн**\n"
+        f"Карта: `{formatted_card}`\n"
+        f"Переведи на:\n"
         f"`5168 7573 0461 7889`\n"
         f"Іжганайтіс Альберт\n\n"
-        f"Після оплати — бот перевірить за 30-60 сек!",
+        f"Через 30-60 сек — відео!",
         parse_mode="Markdown"
     )
     await state.clear()
 
-# === ПРОВЕРКА ВЫПИСКИ ===
+# === ПРОВЕРКА ПЛАТЕЖЕЙ ===
 async def check_transactions():
     last_check = int(time.time()) - 120
     while True:
@@ -163,6 +193,7 @@ async def check_transactions():
             print(f"[CHECK ERROR]: {e}")
         await asyncio.sleep(30)
 
+# === ОТПРАВКА ВИДЕО ===
 async def send_videos(user_id: int, routes: str):
     text = "Оплата підтверджена!\nТвої маршрути:\n\n"
     for r in routes.split(','):
