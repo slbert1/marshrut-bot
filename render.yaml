@@ -5,5 +5,3 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
-      BOT_TOKEN: "8126938596:AAG3Jho7aMkCN21I0cAS14LjZXGys6W_5ks"
-      MONO_TOKEN: "uIxZv6TjIV16nKe8P3ZBalnWGa6-BtEPnOrtZ7ZlDCwI"
