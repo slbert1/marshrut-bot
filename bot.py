@@ -15,8 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # === ЦЕНЫ ТОЛЬКО ИЗ RENDER Environment — БЕЗ УМОЛЧАНИЙ! ===
-PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))  # ОБЯЗАТЕЛЬНО в Render!
-PRICE_ALL = int(os.getenv('PRICE_ALL'))        # ОБЯЗАТЕЛЬНО в Render!
+PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))  # ОБЯЗАТЕЛЬНО!
+PRICE_ALL = int(os.getenv('PRICE_ALL'))        # ОБЯЗАТЕЛЬНО!
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
@@ -28,7 +28,7 @@ if not all([BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL]):
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === БАЗА ===
+# === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -47,10 +47,10 @@ conn.commit()
 
 # === ВИДЕО ===
 VIDEOS = {
-    'khust_route1': 'https://youtu.be/mxtsqKmXWSI',
-    'khust_route8': 'https://youtu.be/7VwtAAaQWE8',
-    'khust_route6': 'https://youtu.be/RnpOEKIddZw',
-    'khust_route2': 'https://youtu.be/RllCGT6dOPc',
+    'khust_route1': 'https://youtu.be/mxtsqKmXWSI',  # Хуст → Івано-Франківськ
+    'khust_route8': 'https://youtu.be/7VwtAAaQWE8',  # Хуст → Одеса
+    'khust_route6': 'https://youtu.be/RnpOEKIddZw',  # Хуст → Київ
+    'khust_route2': 'https://youtu.be/RllCGT6dOPc',  # Хуст → Львів
 }
 
 # === FSM ===
@@ -97,29 +97,32 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(amount=amount, routes=routes)
 
     await callback.message.edit_text(
-        f"Введи номер карти (з пробілами):\n"
-        f"`4441 1111 1111 1111`\n"
+        f"Введи номер карти (16 цифр, можна без пробілів):\n"
+        f"`4441111111111111` або `4441 1111 1111 1111`\n"
         f"Спишеться **{amount} грн**",
         parse_mode="Markdown"
     )
     await state.set_state(Order.waiting_card)
 
-# === КАРТА С ПРОБЕЛАМИ ===
+# === КАРТА С АВТОМАСКОЙ ===
 @dp.message(Order.waiting_card)
 async def get_card(message: types.Message, state: FSMContext):
-    raw_card = message.text.strip()
-    card = raw_card.replace(" ", "")
+    raw_input = message.text.strip()
+    card = ''.join(filter(str.isdigit, raw_input))  # Убираем всё кроме цифр
     
-    if not (card.isdigit() and len(card) == 16):
+    if len(card) != 16:
         await message.answer(
             "Невірний формат!\n"
-            "Введи 16 цифр з пробілами:\n"
-            "`4441 1111 1111 1111`",
+            "Введи 16 цифр (можна без пробілів):\n"
+            "`4441111111111111` або `4441 1111 1111 1111`",
             parse_mode="Markdown"
         )
         return
 
+    # === АВТОМАТИЧЕСКАЯ МАСКА ===
     formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
+    # === КОНЕЦ МАСКИ ===
+
     data = await state.get_data()
     amount = data['amount']
     routes = data['routes']
@@ -203,7 +206,7 @@ async def send_videos(user_id: int, routes: str):
     try:
         await bot.send_message(user_id, text)
     except:
-        pass
+        pass  # пользователь заблокировал бота
 
 # === ЗАПУСК ===
 async def main():
