@@ -3,6 +3,7 @@ import asyncio
 import aiohttp
 import sqlite3
 import time
+import threading
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -12,23 +13,23 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 
+# === ЗАГРУЗКА .env (локально) ===
 load_dotenv()
 
-# === ЦЕНЫ ТОЛЬКО ИЗ RENDER Environment — БЕЗ УМОЛЧАНИЙ! ===
-PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))  # ОБЯЗАТЕЛЬНО!
-PRICE_ALL = int(os.getenv('PRICE_ALL'))        # ОБЯЗАТЕЛЬНО!
-
+# === ЦЕНЫ ТОЛЬКО ИЗ RENDER Environment ===
+PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))
+PRICE_ALL = int(os.getenv('PRICE_ALL'))
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
 
-# === ПРОВЕРКА НАЛИЧИЯ ВСЕХ ПЕРЕМЕННЫХ ===
+# === ПРОВЕРКА ПЕРЕМЕННЫХ ===
 if not all([BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL]):
-    raise ValueError("Ошибка: BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL — обязательны в Render Environment!")
+    raise ValueError("BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL — обязательны в Render!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === БАЗА ДАННЫХ ===
+# === БАЗА ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -47,17 +48,17 @@ conn.commit()
 
 # === ВИДЕО ===
 VIDEOS = {
-    'khust_route1': 'https://youtu.be/mxtsqKmXWSI',  # Хуст → Івано-Франківськ
-    'khust_route8': 'https://youtu.be/7VwtAAaQWE8',  # Хуст → Одеса
-    'khust_route6': 'https://youtu.be/RnpOEKIddZw',  # Хуст → Київ
-    'khust_route2': 'https://youtu.be/RllCGT6dOPc',  # Хуст → Львів
+    'khust_route1': 'https://youtu.be/mxtsqKmXWSI',
+    'khust_route8': 'https://youtu.be/7VwtAAaQWE8',
+    'khust_route6': 'https://youtu.be/RnpOEKIddZw',
+    'khust_route2': 'https://youtu.be/RllCGT6dOPc',
 }
 
 # === FSM ===
 class Order(StatesGroup):
     waiting_card = State()
 
-# === КЛАВИАТУРА — ЦЕНЫ ИЗ env ===
+# === КЛАВИАТУРА ===
 def get_routes_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Маршрут №1 — {PRICE_SINGLE} грн", callback_data="buy_khust_route1")],
@@ -82,7 +83,6 @@ async def start(message: types.Message):
 @dp.callback_query(F.data.startswith("buy_"))
 async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
     action = callback.data
-
     routes_map = {
         "buy_khust_route1": "khust_route1",
         "buy_khust_route8": "khust_route8",
@@ -90,12 +90,9 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
         "buy_khust_route2": "khust_route2",
         "buy_khust_all": "khust_route1,khust_route8,khust_route6,khust_route2"
     }
-
     routes = routes_map[action]
     amount = PRICE_ALL if action == "buy_khust_all" else PRICE_SINGLE
-
     await state.update_data(amount=amount, routes=routes)
-
     await callback.message.edit_text(
         f"Введи номер карти (16 цифр, можна без пробілів):\n"
         f"`4441111111111111` або `4441 1111 1111 1111`\n"
@@ -108,8 +105,7 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(Order.waiting_card)
 async def get_card(message: types.Message, state: FSMContext):
     raw_input = message.text.strip()
-    card = ''.join(filter(str.isdigit, raw_input))  # Убираем всё кроме цифр
-    
+    card = ''.join(filter(str.isdigit, raw_input))
     if len(card) != 16:
         await message.answer(
             "Невірний формат!\n"
@@ -118,15 +114,10 @@ async def get_card(message: types.Message, state: FSMContext):
             parse_mode="Markdown"
         )
         return
-
-    # === АВТОМАТИЧЕСКАЯ МАСКА ===
     formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
-    # === КОНЕЦ МАСКИ ===
-
     data = await state.get_data()
     amount = data['amount']
     routes = data['routes']
-
     order_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute(
         "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time) "
@@ -134,7 +125,6 @@ async def get_card(message: types.Message, state: FSMContext):
         (message.from_user.id, message.from_user.username or "N/A", card, amount, routes, order_time)
     )
     conn.commit()
-
     await message.answer(
         f"Оплата: **{amount} грн**\n"
         f"Карта: `{formatted_card}`\n"
@@ -161,22 +151,17 @@ async def check_transactions():
                         await asyncio.sleep(30)
                         continue
                     data = await resp.json()
-
                     for tx in data:
                         if tx.get('amount', 0) <= 0:
                             continue
-
                         amount_cents = tx['amount']
                         amount_uah = amount_cents // 100
-
                         order_time = datetime.fromtimestamp(tx['time'])
                         time_window_start = (order_time - timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
                         time_window_end = (order_time + timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
-
                         masked_pan = tx.get('maskedPan', [None])[0]
                         if not masked_pan:
                             continue
-
                         row = cursor.execute(
                             "SELECT user_id, routes FROM purchases "
                             "WHERE amount=? AND status='pending' "
@@ -184,13 +169,11 @@ async def check_transactions():
                             "AND card LIKE ?",
                             (amount_uah, time_window_start, time_window_end, f"%{masked_pan[-4:]}")
                         ).fetchone()
-
                         if row:
                             user_id, routes = row
                             await send_videos(user_id, routes)
                             cursor.execute("UPDATE purchases SET status='success' WHERE user_id=? AND amount=?", (user_id, amount_uah))
                             conn.commit()
-
                     last_check = int(time.time())
         except Exception as e:
             print(f"[CHECK ERROR]: {e}")
@@ -206,14 +189,15 @@ async def send_videos(user_id: int, routes: str):
     try:
         await bot.send_message(user_id, text)
     except:
-        pass  # пользователь заблокировал бота
+        pass
 
-# === ЗАПУСК ===
+# === ОСНОВНАЯ ФУНКЦИЯ БОТА ===
 async def main():
     print(f"Бот запущен! Ціни: {PRICE_SINGLE} / {PRICE_ALL} грн")
     asyncio.create_task(check_transactions())
     await dp.start_polling(bot)
-# === ВЕБ-СЕРВЕР ДЛЯ RENDER (открывает порт 10000) ===
+
+# === ВЕБ-СЕРВЕР ДЛЯ RENDER ===
 from fastapi import FastAPI
 import uvicorn
 
@@ -221,13 +205,18 @@ app = FastAPI()
 
 @app.get("/")
 async def root():
-    return {"status": "bot is alive"}
+    return {"status": "bot is alive", "time": datetime.now().isoformat()}
 
+# === ЗАПУСК: БОТ В ПОТОКЕ + ВЕБ-СЕРВЕР В ГЛАВНОМ ===
 if __name__ == '__main__':
-    # Запуск бота в фоне
-    asyncio.create_task(main())
-    # Запуск веб-сервера
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 10000)))
+    # Запуск бота в отдельном потоке
+    def run_bot():
+        asyncio.run(main())
 
-if __name__ == '__main__':
-    asyncio.run(main())
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+
+    # Запуск веб-сервера (главный поток)
+    port = int(os.getenv('PORT', 10000))
+    print(f"Запуск веб-сервера на порту {port}...")
+    uvicorn.run(app, host="0.0.0.0", port=port)
