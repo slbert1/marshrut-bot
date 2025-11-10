@@ -29,7 +29,7 @@ if not all([BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL]):
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === БАЗА ===
+# === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -197,7 +197,7 @@ async def main():
     asyncio.create_task(check_transactions())
     await dp.start_polling(bot)
 
-# === ВЕБ-СЕРВЕР ДЛЯ RENDER ===
+# === ВЕБ-СЕРВЕР ДЛЯ RENDER (БЕЗ ОСТАНОВКИ!) ===
 from fastapi import FastAPI
 import uvicorn
 
@@ -207,7 +207,7 @@ app = FastAPI()
 async def root():
     return {"status": "bot is alive", "time": datetime.now().isoformat()}
 
-# === ЗАПУСК: БОТ В ПОТОКЕ + ВЕБ-СЕРВЕР В ГЛАВНОМ ===
+# === ЗАПУСК: БОТ В ПОТОКЕ + ВЕБ-СЕРВЕР БЕЗ ЛОГОВ ДОСТУПА ===
 if __name__ == '__main__':
     # Запуск бота в отдельном потоке
     def run_bot():
@@ -216,7 +216,13 @@ if __name__ == '__main__':
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
 
-    # Запуск веб-сервера (главный поток)
+    # Запуск веб-сервера — БЕЗ ОСТАНОВКИ ПРИ ЗАКРЫТИИ URL!
     port = int(os.getenv('PORT', 10000))
     print(f"Запуск веб-сервера на порту {port}...")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        log_level="warning",     # Только важные логи
+        access_log=False         # Отключаем логи доступа (чтобы не падал)
+    )
