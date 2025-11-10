@@ -3,7 +3,6 @@ import asyncio
 import aiohttp
 import sqlite3
 import time
-import threading
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -12,24 +11,26 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
+from fastapi import FastAPI
+import uvicorn
 
 # === ЗАГРУЗКА .env (локально) ===
 load_dotenv()
 
-# === ЦЕНЫ ТОЛЬКО ИЗ RENDER Environment ===
+# === ЦЕНЫ ТОЛЬКО ИЗ RENDER ===
 PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))
 PRICE_ALL = int(os.getenv('PRICE_ALL'))
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
 
-# === ПРОВЕРКА ПЕРЕМЕННЫХ ===
 if not all([BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL]):
-    raise ValueError("BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL — обязательны в Render!")
+    raise ValueError("BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL — обязательны!")
 
+# === БОТ ===
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === БАЗА ДАННЫХ ===
+# === БАЗА ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -101,7 +102,7 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
     )
     await state.set_state(Order.waiting_card)
 
-# === КАРТА С АВТОМАСКОЙ ===
+# === КАРТА ===
 @dp.message(Order.waiting_card)
 async def get_card(message: types.Message, state: FSMContext):
     raw_input = message.text.strip()
@@ -109,8 +110,8 @@ async def get_card(message: types.Message, state: FSMContext):
     if len(card) != 16:
         await message.answer(
             "Невірний формат!\n"
-            "Введи 16 цифр (можна без пробілів):\n"
-            "`4441111111111111` або `4441 1111 1111 1111`",
+            "Введи 16 цифр:\n"
+            "`4441111111111111`",
             parse_mode="Markdown"
         )
         return
@@ -191,38 +192,42 @@ async def send_videos(user_id: int, routes: str):
     except:
         pass
 
-# === ОСНОВНАЯ ФУНКЦИЯ БОТА ===
+# === ОСНОВНАЯ ФУНКЦИЯ ===
 async def main():
     print(f"Бот запущен! Ціни: {PRICE_SINGLE} / {PRICE_ALL} грн")
+    # Запуск проверки платежей
     asyncio.create_task(check_transactions())
+    # Запуск polling
     await dp.start_polling(bot)
 
-# === ВЕБ-СЕРВЕР ДЛЯ RENDER (БЕЗ ОСТАНОВКИ!) ===
-from fastapi import FastAPI
-import uvicorn
-
+# === FASTAPI ===
 app = FastAPI()
 
 @app.get("/")
 async def root():
     return {"status": "bot is alive", "time": datetime.now().isoformat()}
 
-# === ЗАПУСК: БОТ В ПОТОКЕ + ВЕБ-СЕРВЕР БЕЗ ЛОГОВ ДОСТУПА ===
-if __name__ == '__main__':
-    # Запуск бота в отдельном потоке
-    def run_bot():
-        asyncio.run(main())
+# === ЗАПУСК ВСЁ В ОДНОМ ПОТОКЕ ===
+if __name__ == "__main__":
+    import sys
 
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # Запуск бота и сервера в одном event loop
+    async def run_all():
+        # Запуск бота
+        bot_task = asyncio.create_task(main())
+        # Запуск веб-сервера
+        config = uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=int(os.getenv("PORT", 10000)),
+            log_level="warning"
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
 
-    # Запуск веб-сервера — БЕЗ ОСТАНОВКИ ПРИ ЗАКРЫТИИ URL!
-    port = int(os.getenv('PORT', 10000))
-    print(f"Запуск веб-сервера на порту {port}...")
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=port,
-        log_level="warning",     # Только важные логи
-        access_log=False         # Отключаем логи доступа (чтобы не падал)
-    )
+    # Запуск
+    try:
+        asyncio.run(run_all())
+    except KeyboardInterrupt:
+        print("Бот остановлен.")
+        sys.exit(0)
