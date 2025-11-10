@@ -213,6 +213,21 @@ async def main():
     print(f"Бот запущен! Ціни: {PRICE_SINGLE} / {PRICE_ALL} грн")
     asyncio.create_task(check_transactions())
     await dp.start_polling(bot)
+# === ВЕБ-СЕРВЕР ДЛЯ RENDER (открывает порт 10000) ===
+from fastapi import FastAPI
+import uvicorn
+
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"status": "bot is alive"}
+
+if __name__ == '__main__':
+    # Запуск бота в фоне
+    asyncio.create_task(main())
+    # Запуск веб-сервера
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 10000)))
 
 if __name__ == '__main__':
     asyncio.run(main())
