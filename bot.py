@@ -14,10 +14,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# === ОБЯЗАТЕЛЬНО ДОЛЖНЫ БЫТЬ В .env ===
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONO_TOKEN = os.getenv('MONO_TOKEN')
-PRICE_SINGLE = int(os.getenv('PRICE_SINGLE', '250'))  # грн
-PRICE_ALL = int(os.getenv('PRICE_ALL', '1000'))       # грн
+PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))   # ОБЯЗАТЕЛЬНО!
+PRICE_ALL = int(os.getenv('PRICE_ALL'))         # ОБЯЗАТЕЛЬНО!
+
+# Проверка на запуск
+if not all([BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL]):
+    raise ValueError("Ошибка: Заполни BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL в .env!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -110,7 +115,7 @@ async def get_card(message: types.Message, state: FSMContext):
 
 # === ПРОВЕРКА ВЫПИСКИ ===
 async def check_transactions():
-    last_check = int(time.time()) - 120  # 2 минуты назад
+    last_check = int(time.time()) - 120
     while True:
         try:
             async with aiohttp.ClientSession() as session:
@@ -126,12 +131,11 @@ async def check_transactions():
 
                     for tx in data:
                         if tx.get('amount', 0) <= 0:
-                            continue  # только поступления
+                            continue
 
                         amount_cents = tx['amount']
                         amount_uah = amount_cents // 100
 
-                        # Ищем заказ
                         order_time = datetime.fromtimestamp(tx['time'])
                         time_window_start = (order_time - timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
                         time_window_end = (order_time + timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
@@ -141,7 +145,7 @@ async def check_transactions():
                             continue
 
                         row = cursor.execute(
-                            "SELECT user_id, routes, card FROM purchases "
+                            "SELECT user_id, routes FROM purchases "
                             "WHERE amount=? AND status='pending' "
                             "AND order_time BETWEEN ? AND ? "
                             "AND card LIKE ?",
@@ -149,7 +153,7 @@ async def check_transactions():
                         ).fetchone()
 
                         if row:
-                            user_id, routes, _ = row
+                            user_id, routes = row
                             await send_videos(user_id, routes)
                             cursor.execute("UPDATE purchases SET status='success' WHERE user_id=? AND amount=?", (user_id, amount_uah))
                             conn.commit()
@@ -168,11 +172,11 @@ async def send_videos(user_id: int, routes: str):
     try:
         await bot.send_message(user_id, text)
     except:
-        pass  # пользователь заблокировал бота
+        pass
 
 # === ЗАПУСК ===
 async def main():
-    print("Бот запущен... Тест: 250 грн → відео")
+    print(f"Бот запущен! Ціни: {PRICE_SINGLE} / {PRICE_ALL} грн")
     asyncio.create_task(check_transactions())
     await dp.start_polling(bot)
 
