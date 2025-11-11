@@ -183,7 +183,7 @@ async def main():
         try:
             await dp.start_polling(bot)
         except Exception as e:
-            print(f"[ОШИБКА] {e} — переподключение через 5 сек...")
+            print(f"[ОШИБКА] {e}")
             await asyncio.sleep(5)
 
 if __name__ == '__main__':
