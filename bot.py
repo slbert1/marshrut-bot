@@ -1,9 +1,7 @@
 import os
 import asyncio
-import aiohttp
 import sqlite3
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -11,22 +9,18 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
-from fastapi import FastAPI
-import uvicorn
 
-# === ЗАГРУЗКА .env (локально) ===
 load_dotenv()
 
-# === ЦЕНЫ ТОЛЬКО ИЗ RENDER ===
-PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))
-PRICE_ALL = int(os.getenv('PRICE_ALL'))
+# === КОНФИГ ===
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-MONO_TOKEN = os.getenv('MONO_TOKEN')
+ADMIN_ID = int(os.getenv('ADMIN_ID'))  # ТВОЙ ID
+PRICE_SINGLE = int(os.getenv('PRICE_SINGLE', 250))
+PRICE_ALL = int(os.getenv('PRICE_ALL', 1000))
 
-if not all([BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL]):
-    raise ValueError("BOT_TOKEN, MONO_TOKEN, PRICE_SINGLE, PRICE_ALL — обязательны!")
+if not BOT_TOKEN or not ADMIN_ID:
+    raise ValueError("BOT_TOKEN и ADMIN_ID — обязательны!")
 
-# === БОТ ===
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -59,7 +53,7 @@ VIDEOS = {
 class Order(StatesGroup):
     waiting_card = State()
 
-# === КЛАВИАТУРА ===
+# === КЛАВИАТУРА МАРШРУТОВ ===
 def get_routes_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Маршрут №1 — {PRICE_SINGLE} грн", callback_data="buy_khust_route1")],
@@ -93,92 +87,98 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
     }
     routes = routes_map[action]
     amount = PRICE_ALL if action == "buy_khust_all" else PRICE_SINGLE
+
     await state.update_data(amount=amount, routes=routes)
+
     await callback.message.edit_text(
-        f"Введи номер карти (16 цифр, можна без пробілів):\n"
-        f"`4441111111111111` або `4441 1111 1111 1111`\n"
+        f"Введи номер карти (16 цифр):\n"
+        f"`4441111111111111`\n"
         f"Спишеться **{amount} грн**",
         parse_mode="Markdown"
     )
     await state.set_state(Order.waiting_card)
 
-# === КАРТА ===
+# === КАРТА + УВЕДОМЛЕНИЕ АДМИНУ ===
 @dp.message(Order.waiting_card)
 async def get_card(message: types.Message, state: FSMContext):
     raw_input = message.text.strip()
     card = ''.join(filter(str.isdigit, raw_input))
     if len(card) != 16:
-        await message.answer(
-            "Невірний формат!\n"
-            "Введи 16 цифр:\n"
-            "`4441111111111111`",
-            parse_mode="Markdown"
-        )
+        await message.answer("Невірно! Введи 16 цифр.")
         return
+
     formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
     data = await state.get_data()
     amount = data['amount']
     routes = data['routes']
-    order_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    order_time = datetime.now().strftime('%H:%M:%S')
+
+    # Сохраняем заказ
     cursor.execute(
         "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time) "
         "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
         (message.from_user.id, message.from_user.username or "N/A", card, amount, routes, order_time)
     )
     conn.commit()
+
+    # Уведомление пользователю
     await message.answer(
         f"Оплата: **{amount} грн**\n"
         f"Карта: `{formatted_card}`\n"
         f"Переведи на:\n"
         f"`5168 7573 0461 7889`\n"
         f"Іжганайтіс Альберт\n\n"
-        f"Через 30-60 сек — відео!",
+        f"Чекай підтвердження...",
         parse_mode="Markdown"
     )
+
+    # Уведомление админу с кнопкой
+    routes_text = ", ".join([r.split('_')[1].upper() for r in routes.split(',')])
+    admin_text = (
+        f"Новий заказ!\n\n"
+        f"Користувач: @{message.from_user.username or 'N/A'}\n"
+        f"ID: `{message.from_user.id}`\n"
+        f"Карта: `{formatted_card}`\n"
+        f"Сума: **{amount} грн**\n"
+        f"Маршрути: {routes_text}\n"
+        f"Час: {order_time}"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{message.from_user.id}_{amount}")]
+    ])
+    await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
     await state.clear()
 
-# === ПРОВЕРКА ПЛАТЕЖЕЙ ===
-async def check_transactions():
-    last_check = int(time.time()) - 120
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                headers = {'X-Token': MONO_TOKEN}
-                async with session.get(
-                    f'https://api.monobank.ua/personal/statement/0/{last_check}',
-                    headers=headers
-                ) as resp:
-                    if resp.status != 200:
-                        await asyncio.sleep(30)
-                        continue
-                    data = await resp.json()
-                    for tx in data:
-                        if tx.get('amount', 0) <= 0:
-                            continue
-                        amount_cents = tx['amount']
-                        amount_uah = amount_cents // 100
-                        order_time = datetime.fromtimestamp(tx['time'])
-                        time_window_start = (order_time - timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
-                        time_window_end = (order_time + timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
-                        masked_pan = tx.get('maskedPan', [None])[0]
-                        if not masked_pan:
-                            continue
-                        row = cursor.execute(
-                            "SELECT user_id, routes FROM purchases "
-                            "WHERE amount=? AND status='pending' "
-                            "AND order_time BETWEEN ? AND ? "
-                            "AND card LIKE ?",
-                            (amount_uah, time_window_start, time_window_end, f"%{masked_pan[-4:]}")
-                        ).fetchone()
-                        if row:
-                            user_id, routes = row
-                            await send_videos(user_id, routes)
-                            cursor.execute("UPDATE purchases SET status='success' WHERE user_id=? AND amount=?", (user_id, amount_uah))
-                            conn.commit()
-                    last_check = int(time.time())
-        except Exception as e:
-            print(f"[CHECK ERROR]: {e}")
-        await asyncio.sleep(30)
+# === КНОПКА "ОДОБРИТЬ" ===
+@dp.callback_query(F.data.startswith("approve_"))
+async def approve_order(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Ти не адмін!", show_alert=True)
+        return
+
+    _, user_id, amount = callback.data.split("_")
+    user_id = int(user_id)
+    amount = int(amount)
+
+    row = cursor.execute(
+        "SELECT routes FROM purchases WHERE user_id=? AND amount=? AND status='pending'",
+        (user_id, amount)
+    ).fetchone()
+
+    if not row:
+        await callback.answer("Замовлення не знайдено або вже оброблено.")
+        return
+
+    routes = row[0]
+    await send_videos(user_id, routes)
+    cursor.execute("UPDATE purchases SET status='success' WHERE user_id=? AND amount=?", (user_id, amount))
+    conn.commit()
+
+    await callback.message.edit_text(f"{callback.message.text}\n\nОдобрено!", parse_mode="Markdown")
+    try:
+        await bot.send_message(user_id, "Оплата підтверджена! Відео надіслано.")
+    except:
+        pass
 
 # === ОТПРАВКА ВИДЕО ===
 async def send_videos(user_id: int, routes: str):
@@ -192,42 +192,10 @@ async def send_videos(user_id: int, routes: str):
     except:
         pass
 
-# === ОСНОВНАЯ ФУНКЦИЯ ===
+# === ЗАПУСК ===
 async def main():
-    print(f"Бот запущен! Ціни: {PRICE_SINGLE} / {PRICE_ALL} грн")
-    # Запуск проверки платежей
-    asyncio.create_task(check_transactions())
-    # Запуск polling
+    print("Бот запущен! Ручной режим.")
     await dp.start_polling(bot)
 
-# === FASTAPI ===
-app = FastAPI()
-
-@app.get("/")
-async def root():
-    return {"status": "bot is alive", "time": datetime.now().isoformat()}
-
-# === ЗАПУСК ВСЁ В ОДНОМ ПОТОКЕ ===
-if __name__ == "__main__":
-    import sys
-
-    # Запуск бота и сервера в одном event loop
-    async def run_all():
-        # Запуск бота
-        bot_task = asyncio.create_task(main())
-        # Запуск веб-сервера
-        config = uvicorn.Config(
-            app,
-            host="0.0.0.0",
-            port=int(os.getenv("PORT", 10000)),
-            log_level="warning"
-        )
-        server = uvicorn.Server(config)
-        await server.serve()
-
-    # Запуск
-    try:
-        asyncio.run(run_all())
-    except KeyboardInterrupt:
-        print("Бот остановлен.")
-        sys.exit(0)
+if __name__ == '__main__':
+    asyncio.run(main())
