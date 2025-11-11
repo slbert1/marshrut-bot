@@ -12,14 +12,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# === КОНФИГ ===
+# === ВСЁ ИЗ ENV — БЕЗ ХАРДКОДОВ ===
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID'))  # ТВОЙ ID
-PRICE_SINGLE = int(os.getenv('PRICE_SINGLE', 250))
-PRICE_ALL = int(os.getenv('PRICE_ALL', 1000))
+ADMIN_ID = int(os.getenv('ADMIN_ID'))
+PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))
+PRICE_ALL = int(os.getenv('PRICE_ALL'))
 
-if not BOT_TOKEN or not ADMIN_ID:
-    raise ValueError("BOT_TOKEN и ADMIN_ID — обязательны!")
+# === ПРОВЕРКА ОБЯЗАТЕЛЬНЫХ ПЕРЕМЕННЫХ ===
+if not all([BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL]):
+    raise ValueError("BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL — обязательны в Render Environment!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -126,13 +127,13 @@ async def get_card(message: types.Message, state: FSMContext):
         f"Оплата: **{amount} грн**\n"
         f"Карта: `{formatted_card}`\n"
         f"Переведи на:\n"
-        f"`5168 7573 0461 7889`\n"
-        f"Іжганайтіс Альберт\n\n"
+        f"`4441 1144 6012 6863`\n"
+       
         f"Чекай підтвердження...",
         parse_mode="Markdown"
     )
 
-    # Уведомление админу с кнопкой
+    # Уведомление админу
     routes_text = ", ".join([r.split('_')[1].upper() for r in routes.split(',')])
     admin_text = (
         f"Новий заказ!\n\n"
@@ -149,7 +150,7 @@ async def get_card(message: types.Message, state: FSMContext):
     await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
     await state.clear()
 
-# === КНОПКА "ОДОБРИТЬ" ===
+# === ОДОБРЕНИЕ ===
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_order(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -166,7 +167,7 @@ async def approve_order(callback: types.CallbackQuery):
     ).fetchone()
 
     if not row:
-        await callback.answer("Замовлення не знайдено або вже оброблено.")
+        await callback.answer("Замовлення не знайдено.")
         return
 
     routes = row[0]
@@ -195,7 +196,12 @@ async def send_videos(user_id: int, routes: str):
 # === ЗАПУСК ===
 async def main():
     print("Бот запущен! Ручной режим.")
-    await dp.start_polling(bot)
+    while True:
+        try:
+            await dp.start_polling(bot)
+        except Exception as e:
+            print(f"[ОШИБКА] {e} — переподключение через 5 сек...")
+            await asyncio.sleep(5)
 
 if __name__ == '__main__':
     asyncio.run(main())
