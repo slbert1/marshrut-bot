@@ -9,18 +9,19 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
+from fastapi import FastAPI
+import uvicorn
 
 load_dotenv()
 
-# === ВСЁ ИЗ ENV — БЕЗ ХАРДКОДОВ ===
+# === ENV ===
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))
 PRICE_ALL = int(os.getenv('PRICE_ALL'))
 
-# === ПРОВЕРКА ОБЯЗАТЕЛЬНЫХ ПЕРЕМЕННЫХ ===
 if not all([BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL]):
-    raise ValueError("BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL — обязательны в Render Environment!")
+    raise ValueError("Все переменные обязательны!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -42,7 +43,6 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# === ВИДЕО ===
 VIDEOS = {
     'khust_route1': 'https://youtu.be/mxtsqKmXWSI',
     'khust_route8': 'https://youtu.be/7VwtAAaQWE8',
@@ -50,11 +50,9 @@ VIDEOS = {
     'khust_route2': 'https://youtu.be/RllCGT6dOPc',
 }
 
-# === FSM ===
 class Order(StatesGroup):
     waiting_card = State()
 
-# === КЛАВИАТУРА МАРШРУТОВ ===
 def get_routes_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Маршрут №1 — {PRICE_SINGLE} грн", callback_data="buy_khust_route1")],
@@ -64,7 +62,6 @@ def get_routes_keyboard():
         [InlineKeyboardButton(text=f"Всі 4 маршрути — {PRICE_ALL} грн", callback_data="buy_khust_all")],
     ])
 
-# === СТАРТ ===
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
@@ -75,7 +72,6 @@ async def start(message: types.Message):
         reply_markup=get_routes_keyboard()
     )
 
-# === ПОКУПКА ===
 @dp.callback_query(F.data.startswith("buy_"))
 async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
     action = callback.data
@@ -88,9 +84,7 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
     }
     routes = routes_map[action]
     amount = PRICE_ALL if action == "buy_khust_all" else PRICE_SINGLE
-
     await state.update_data(amount=amount, routes=routes)
-
     await callback.message.edit_text(
         f"Введи номер карти (16 цифр):\n"
         f"`4441111111111111`\n"
@@ -99,7 +93,6 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
     )
     await state.set_state(Order.waiting_card)
 
-# === КАРТА + УВЕДОМЛЕНИЕ АДМИНУ ===
 @dp.message(Order.waiting_card)
 async def get_card(message: types.Message, state: FSMContext):
     raw_input = message.text.strip()
@@ -114,7 +107,6 @@ async def get_card(message: types.Message, state: FSMContext):
     routes = data['routes']
     order_time = datetime.now().strftime('%H:%M:%S')
 
-    # Сохраняем заказ
     cursor.execute(
         "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time) "
         "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
@@ -122,18 +114,16 @@ async def get_card(message: types.Message, state: FSMContext):
     )
     conn.commit()
 
-    # Уведомление пользователю
     await message.answer(
         f"Оплата: **{amount} грн**\n"
         f"Карта: `{formatted_card}`\n"
         f"Переведи на:\n"
         f"`4441 1144 6012 6863`\n"
-       
+        
         f"Чекай підтвердження...",
         parse_mode="Markdown"
     )
 
-    # Уведомление админу
     routes_text = ", ".join([r.split('_')[1].upper() for r in routes.split(',')])
     admin_text = (
         f"Новий заказ!\n\n"
@@ -150,7 +140,6 @@ async def get_card(message: types.Message, state: FSMContext):
     await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
     await state.clear()
 
-# === ОДОБРЕНИЕ ===
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_order(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -181,7 +170,6 @@ async def approve_order(callback: types.CallbackQuery):
     except:
         pass
 
-# === ОТПРАВКА ВИДЕО ===
 async def send_videos(user_id: int, routes: str):
     text = "Оплата підтверджена!\nТвої маршрути:\n\n"
     for r in routes.split(','):
@@ -193,15 +181,30 @@ async def send_videos(user_id: int, routes: str):
     except:
         pass
 
+# === FastAPI для UptimeRobot ===
+app = FastAPI()
+
+@app.get("/")
+async def health():
+    return {"status": "alive", "time": datetime.now().isoformat()}
+
 # === ЗАПУСК ===
-async def main():
+async def run_bot():
     print("Бот запущен! Ручной режим.")
     while True:
         try:
             await dp.start_polling(bot)
         except Exception as e:
-            print(f"[ОШИБКА] {e} — переподключение через 5 сек...")
+            print(f"[ОШИБКА] {e}")
             await asyncio.sleep(5)
 
-if __name__ == '__main__':
+async def run_server():
+    config = uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)), log_level="warning")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+async def main():
+    await asyncio.gather(run_bot(), run_server())
+
+if __name__ == "__main__":
     asyncio.run(main())
