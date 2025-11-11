@@ -9,24 +9,20 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
-from fastapi import FastAPI
-import uvicorn
 
 load_dotenv()
 
-# === ENV ===
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))
 PRICE_ALL = int(os.getenv('PRICE_ALL'))
 
 if not all([BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL]):
-    raise ValueError("Все переменные обязательны!")
+    raise ValueError("BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL — обязательны!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === БАЗА ===
 conn = sqlite3.connect('purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -119,7 +115,7 @@ async def get_card(message: types.Message, state: FSMContext):
         f"Карта: `{formatted_card}`\n"
         f"Переведи на:\n"
         f"`4441 1144 6012 6863`\n"
-        
+        f"Іжганайтіс Альберт\n\n"
         f"Чекай підтвердження...",
         parse_mode="Markdown"
     )
@@ -181,15 +177,7 @@ async def send_videos(user_id: int, routes: str):
     except:
         pass
 
-# === FastAPI для UptimeRobot ===
-app = FastAPI()
-
-@app.get("/")
-async def health():
-    return {"status": "alive", "time": datetime.now().isoformat()}
-
-# === ЗАПУСК ===
-async def run_bot():
+async def main():
     print("Бот запущен! Ручной режим.")
     while True:
         try:
@@ -198,13 +186,5 @@ async def run_bot():
             print(f"[ОШИБКА] {e}")
             await asyncio.sleep(5)
 
-async def run_server():
-    config = uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)), log_level="warning")
-    server = uvicorn.Server(config)
-    await server.serve()
-
-async def main():
-    await asyncio.gather(run_bot(), run_server())
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
