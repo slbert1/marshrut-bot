@@ -6,3 +6,4 @@ services:
     startCommand: python bot.py
     plan: free
     runtime: python3.11
+  
