@@ -113,18 +113,27 @@ async def start(message: types.Message, state: FSMContext):
         "SELECT links FROM purchases WHERE user_id=? AND status='success'",
         (user_id,)
     ).fetchone()
+    
+    welcome_text = (
+        "Вітаю в **Хуст ПДР Бот**!\n\n"
+        "Як працює:\n"
+        "1. Обери маршрут\n"
+        "2. Введи номер карти (16 цифр)\n"
+        "3. Переведи гроші на карту нижче\n"
+        "4. Чекай підтвердження — відео прийде миттєво!\n\n"
+        "Ціни:\n"
+        f"• Один маршрут — {PRICE_SINGLE} грн\n"
+        f"• Всі 4 — {PRICE_ALL} грн\n\n"
+        f"Оплата: карта `{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}`\n"
+        "Питання? — кнопка \"Написати адміністратору\""
+    )
+
     if row and row[0]:
         links = row[0].split(',')
         text = "Твої куплені маршрути:\n\n" + "\n".join(links)
         await message.answer(text, reply_markup=get_main_keyboard())
     else:
-        await message.answer(
-            f"Обери маршрут:\n\n"
-            f"Кожен — {PRICE_SINGLE} грн\n"
-            f"Всі 4 — {PRICE_ALL} грн\n\n"
-            f"Оплата на карту — відео миттєво!",
-            reply_markup=get_main_keyboard()
-        )
+        await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
@@ -201,8 +210,7 @@ async def get_card(message: types.Message, state: FSMContext):
         f"Оплата: **{amount} грн**\n"
         f"Карта: `{formatted_card}`\n"
         f"Переведи на:\n"
-        f"`{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}`\n"
-        f"Іжганайтіс Альберт\n\n"
+        f"`{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}`\n\n"
         f"Чекай підтвердження...",
         parse_mode="Markdown"
     )
@@ -272,7 +280,7 @@ async def reject_with_reason(message: types.Message, state: FSMContext):
     try:
         await bot.send_message(user_id, client_text, reply_markup=get_contact_admin_keyboard())
         await asyncio.sleep(1)
-        await start(message, state)  # ← автостарт
+        await start(message, state)
     except Exception as e:
         log.warning(f"Не вдалося надіслати клієнту {user_id}: {e}")
 
@@ -315,7 +323,7 @@ async def forward_to_admin(message: types.Message, state: FSMContext):
         await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
         await message.answer("Ваше повідомлення надіслано адміністратору. Очікуйте відповіді.")
         await asyncio.sleep(1)
-        await start(message, state)  # ← АВТОСТАРТ ПОСЛЕ ОТПРАВКИ
+        await start(message, state)
     except Exception as e:
         await message.answer("Помилка. Спробуйте ще раз.")
         log.error(f"Не вдалося надіслати адміну: {e}")
