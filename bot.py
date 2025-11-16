@@ -41,12 +41,12 @@ except Exception as e:
 
 dp = Dispatcher(storage=storage)
 
-# === БД (с исправлением links) ===
+# === БД ===
 DB_PATH = '/data/purchases.db'
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
-# Создаём таблицу с links
+# Создаём таблицу
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS purchases (
     id INTEGER PRIMARY KEY,
@@ -61,14 +61,12 @@ CREATE TABLE IF NOT EXISTS purchases (
 )
 ''')
 
-# Безопасно добавляем столбец links, если его нет
+# Добавляем столбец links, если нет
 try:
     cursor.execute("ALTER TABLE purchases ADD COLUMN links TEXT")
     log.info("Столбець 'links' додано в БД!")
-except sqlite3.OperationalError as e:
-    if "duplicate column name" not in str(e):
-        log.error(f"Помилка при додаванні links: {e}")
-    # Иначе — уже есть
+except sqlite3.OperationalError:
+    pass  # Уже есть
 
 conn.commit()
 
@@ -142,7 +140,14 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
         "buy_khust_all": (",".join(VIDEOS.keys()), PRICE_ALL),
     }
     routes, amount = routes_map[action]
-    await state.update_data(amount=amount, routes=routes, order_time=datetime.now())
+    
+    # ← ФИКС: datetime → строка
+    await state.update_data(
+        amount=amount,
+        routes=routes,
+        order_time=datetime.now().isoformat()  # ISO 8601
+    )
+    
     await callback.message.edit_text(
         f"Введи номер карти (16 цифр):\n"
         f"`4441111111111111`\n"
@@ -176,7 +181,9 @@ async def get_card(message: types.Message, state: FSMContext):
     data = await state.get_data()
     amount = data['amount']
     routes = data['routes']
-    order_time = data['order_time'].strftime('%H:%M:%S')
+    
+    # ← Восстановление времени
+    order_time = datetime.fromisoformat(data['order_time']).strftime('%H:%M:%S')
 
     cursor.execute(
         "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time) "
