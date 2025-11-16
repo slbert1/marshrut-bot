@@ -3,6 +3,8 @@ import asyncio
 import sqlite3
 import logging
 from datetime import datetime
+from io import BytesIO
+import qrcode
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -46,6 +48,7 @@ DB_PATH = '/data/purchases.db'
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
+# purchases
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS purchases (
     id INTEGER PRIMARY KEY,
@@ -56,15 +59,28 @@ CREATE TABLE IF NOT EXISTS purchases (
     routes TEXT,
     status TEXT,
     order_time TEXT,
-    links TEXT
+    links TEXT,
+    instructor_code TEXT
 )
 ''')
 
-try:
-    cursor.execute("ALTER TABLE purchases ADD COLUMN links TEXT")
-    log.info("Столбець 'links' додано в БД!")
-except sqlite3.OperationalError:
-    pass
+# instructors
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS instructors (
+    id INTEGER PRIMARY KEY,
+    code TEXT UNIQUE,
+    username TEXT,
+    card TEXT,
+    total_earned REAL DEFAULT 0
+)
+''')
+
+# Добавляем колонки (без ошибок)
+for col in ["links", "instructor_code"]:
+    try:
+        cursor.execute(f"ALTER TABLE purchases ADD COLUMN {col} TEXT")
+    except sqlite3.OperationalError:
+        pass
 
 conn.commit()
 
@@ -109,6 +125,13 @@ def get_contact_admin_keyboard():
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
+    args = message.text.split()
+    instructor_code = None
+
+    if len(args) > 1 and args[1].startswith("inst_"):
+        instructor_code = args[1].split("_", 1)[1]
+        await state.update_data(instructor_code=instructor_code)
+
     row = cursor.execute(
         "SELECT links FROM purchases WHERE user_id=? AND status='success'",
         (user_id,)
@@ -198,11 +221,12 @@ async def get_card(message: types.Message, state: FSMContext):
     amount = data['amount']
     routes = data['routes']
     order_time = datetime.fromisoformat(data['order_time']).strftime('%H:%M:%S')
+    instructor_code = data.get('instructor_code')
 
     cursor.execute(
-        "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time) "
-        "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-        (message.from_user.id, message.from_user.username or "N/A", card, amount, routes, order_time)
+        "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time, instructor_code) "
+        "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+        (message.from_user.id, message.from_user.username or "N/A", card, amount, routes, order_time, instructor_code)
     )
     conn.commit()
 
@@ -225,6 +249,9 @@ async def get_card(message: types.Message, state: FSMContext):
         f"Маршрути: {routes_text}\n"
         f"Час: {order_time}"
     )
+    if instructor_code:
+        admin_text += f"\nІнструктор: `{instructor_code}`"
+
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{message.from_user.id}_{amount}")],
         [InlineKeyboardButton(text="Відмовити", callback_data=f"reject_{message.from_user.id}_{amount}")],
@@ -234,6 +261,62 @@ async def get_card(message: types.Message, state: FSMContext):
     except Exception as e:
         log.error(f"Не вдалося надіслати адміну: {e}")
     await state.clear()
+
+# === ДОБАВЛЕНИЕ ИНСТРУКТОРА + QR ===
+@dp.message(Command("add_instructor"))
+async def add_instructor(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Тільки адмін може додавати інструкторів.")
+        return
+
+    args = message.text.split()
+    if len(args) != 4:
+        await message.answer(
+            "Використання:\n"
+            "`/add_instructor 00001 @username 1111222233334444`",
+            parse_mode="Markdown"
+        )
+        return
+
+    code = args[1]
+    username = args[2].lstrip('@')
+    card = args[3]
+
+    if not (code.isdigit() and len(code) == 5):
+        await message.answer("Код: 5 цифр (00001)")
+        return
+    if not (card.isdigit() and len(card) == 16):
+        await message.answer("Карта: 16 цифр")
+        return
+
+    cursor.execute(
+        "INSERT OR REPLACE INTO instructors (code, username, card) VALUES (?, ?, ?)",
+        (code, username, card)
+    )
+    conn.commit()
+
+    ref_link = f"t.me/ExamenPdr_bot?start=inst_{code}"
+    qr = qrcode.QRCode(version=1, box_size=10, border=5)
+    qr.add_data(ref_link)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+
+    bio = BytesIO()
+    img.save(bio, 'PNG')
+    bio.seek(0)
+
+    await message.answer_photo(
+        photo=bio,
+        caption=(
+            f"**Інструктор додано!**\n\n"
+            f"Код: `{code}`\n"
+            f"Username: @{username}\n"
+            f"Карта: `{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}`\n\n"
+            f"Посилання: {ref_link}\n"
+            f"QR-код готовий до друку!"
+        ),
+        parse_mode="Markdown"
+    )
 
 # === ОТКАЗ ===
 @dp.callback_query(F.data.startswith("reject_"))
@@ -330,7 +413,6 @@ async def forward_to_admin(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-# === ЗАКРЫТИЕ СПОРА ===
 @dp.callback_query(F.data.startswith("close_dispute_"))
 async def close_dispute(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -354,7 +436,7 @@ async def close_dispute(callback: types.CallbackQuery):
     except:
         pass
 
-# === ОДОБРЕНИЕ ===
+# === ОДОБРЕНИЕ + 10% ИНСТРУКТОРУ ===
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_order(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -370,7 +452,7 @@ async def approve_order(callback: types.CallbackQuery):
         return
 
     row = cursor.execute(
-        "SELECT routes FROM purchases WHERE user_id=? AND amount=? AND status='pending'",
+        "SELECT routes, instructor_code FROM purchases WHERE user_id=? AND amount=? AND status='pending'",
         (user_id, amount)
     ).fetchone()
 
@@ -378,7 +460,7 @@ async def approve_order(callback: types.CallbackQuery):
         await callback.answer("Замовлення вже оброблено.")
         return
 
-    routes = row[0]
+    routes, instructor_code = row
     links = [VIDEOS[r] for r in routes.split(',')]
     links_text = "\n".join(links)
 
@@ -394,6 +476,27 @@ async def approve_order(callback: types.CallbackQuery):
         await bot.send_message(user_id, "Оплата підтверджена! Відео надіслано.")
     except Exception as e:
         log.warning(f"Юзер {user_id} заблокував бота: {e}")
+
+    # === 10% ИНСТРУКТОРУ ===
+    if instructor_code:
+        payout = amount * 0.1
+        cursor.execute(
+            "UPDATE instructors SET total_earned = total_earned + ? WHERE code=?",
+            (payout, instructor_code)
+        )
+        conn.commit()
+
+        inst_row = cursor.execute("SELECT username FROM instructors WHERE code=?", (instructor_code,)).fetchone()
+        if inst_row:
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"Покупка по QR `{instructor_code}` (@{inst_row[0]})\n"
+                    f"Виплата: **{payout} грн**",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
 
 async def send_videos(user_id: int, links_text: str):
     text = "Оплата підтверджена!\nТвої маршрути:\n\n" + links_text
