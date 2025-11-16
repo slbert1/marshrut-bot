@@ -223,7 +223,6 @@ async def get_card(message: types.Message, state: FSMContext):
     order_time = datetime.fromisoformat(data['order_time']).strftime('%H:%M:%S')
     instructor_code = data.get('instructor_code')
 
-    # ВИПРАВЛЕНО: username без @N/A
     username = message.from_user.username
     username_display = f"@{username}" if username else "Без username"
 
@@ -244,26 +243,29 @@ async def get_card(message: types.Message, state: FSMContext):
     )
 
     routes_text = ", ".join([r.split('_')[1].upper() for r in routes.split(',')])
+    
+    # HTML для адміна — без помилок парсингу
     admin_text = (
         f"Новий заказ!\n\n"
         f"Користувач: {username_display}\n"
-        f"ID: `{message.from_user.id}`\n"
-        f"Карта: `{formatted_card}`\n"
-        f"Сума: **{amount} грн**\n"
+        f"ID: <code>{message.from_user.id}</code>\n"
+        f"Карта: <code>{formatted_card}</code>\n"
+        f"Сума: <b>{amount} грн</b>\n"
         f"Маршрути: {routes_text}\n"
         f"Час: {order_time}"
     )
     if instructor_code:
-        admin_text += f"\nІнструктор: `{instructor_code}`"
+        admin_text += f"\nІнструктор: <code>{instructor_code}</code>"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{message.from_user.id}_{amount}")],
         [InlineKeyboardButton(text="Відмовити", callback_data=f"reject_{message.from_user.id}_{amount}")],
     ])
     try:
-        await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
+        await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
         log.error(f"Не вдалося надіслати адміну: {e}")
+        await bot.send_message(ADMIN_ID, f"Помилка: {e}")  # fallback
     await state.clear()
 
 # === ДОБАВЛЕНИЕ ИНСТРУКТОРА + QR ===
@@ -397,7 +399,7 @@ async def forward_to_admin(message: types.Message, state: FSMContext):
     admin_text = (
         f"Нове повідомлення від користувача!\n\n"
         f"Користувач: @{username}\n"
-        f"ID: `{user_id}`\n"
+        f"ID: <code>{user_id}</code>\n"
         f"Маршрут: {route}\n\n"
         f"Повідомлення:\n{message.text}"
     )
@@ -407,7 +409,7 @@ async def forward_to_admin(message: types.Message, state: FSMContext):
     ])
 
     try:
-        await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
+        await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="HTML")
         await message.answer("Ваше повідомлення надіслано адміністратору. Очікуйте відповіді.")
         await asyncio.sleep(1)
         await start(message, state)
@@ -490,7 +492,6 @@ async def approve_order(callback: types.CallbackQuery):
         )
         conn.commit()
 
-        # Получаем данные
         inst_row = cursor.execute(
             "SELECT username, total_earned, card FROM instructors WHERE code=?",
             (instructor_code,)
@@ -500,14 +501,13 @@ async def approve_order(callback: types.CallbackQuery):
             username, earned, card = inst_row
             formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
 
-            # АВТО-УВЕДОМЛЕНИЕ ПРИ 100+ ГРН
             if earned >= 100:
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"*{username} — виплата готова!*\n\n"
-                        f"Накоплено: **{earned} грн**\n"
-                        f"Карта: `{formatted_card}`\n"
+                        f"<b>{username} — виплата готова!</b>\n\n"
+                        f"Накоплено: <b>{earned} грн</b>\n"
+                        f"Карта: <code>{formatted_card}</code>\n"
                         f"Після виплати — скинь счётчик!",
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(
@@ -515,7 +515,7 @@ async def approve_order(callback: types.CallbackQuery):
                                 callback_data=f"pay_{instructor_code}"
                             )]
                         ]),
-                        parse_mode="Markdown"
+                        parse_mode="HTML"
                     )
                 except:
                     pass
@@ -555,11 +555,11 @@ async def pay_instructor(callback: types.CallbackQuery):
 
     formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
     await callback.message.edit_text(
-        f"*{username} — виплата виконана!*\n\n"
-        f"Виплачено: **{earned} грн**\n"
-        f"Карта: `{formatted_card}`\n"
+        f"<b>{username} — виплата виконана!</b>\n\n"
+        f"Виплачено: <b>{earned} грн</b>\n"
+        f"Карта: <code>{formatted_card}</code>\n"
         f"Счётчик скинуто.",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     await callback.answer("Виплата підтверджена!")
 
@@ -578,14 +578,14 @@ async def show_payouts(message: types.Message):
         await message.answer("Немає виплат.")
         return
 
-    text = "*Виплати інструкторам:*\n\n"
+    text = "<b>Виплати інструкторам:</b>\n\n"
     keyboard = []
     total = 0
 
     for code, username, card, earned in rows:
         formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
         status = "Готово до виплати!" if earned >= 100 else f"{earned} грн"
-        text += f"@{username} — `{formatted_card}` — **{status}**\n"
+        text += f"@{username} — <code>{formatted_card}</code> — <b>{status}</b>\n"
         if earned >= 100:
             keyboard.append([InlineKeyboardButton(
                 text=f"Виплатити {earned} грн",
@@ -593,11 +593,11 @@ async def show_payouts(message: types.Message):
             )])
         total += earned
 
-    text += f"\n*Всього:* **{total} грн**"
+    text += f"\n<b>Всього:</b> <b>{total} грн</b>"
     await message.answer(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 # === ЗАПУСК ===
