@@ -272,8 +272,7 @@ async def reject_with_reason(message: types.Message, state: FSMContext):
     try:
         await bot.send_message(user_id, client_text, reply_markup=get_contact_admin_keyboard())
         await asyncio.sleep(1)
-        # ФИКС: используем реальное сообщение, а не dummy
-        await start(message, state)  # ← просто рестарт
+        await start(message, state)  # ← автостарт
     except Exception as e:
         log.warning(f"Не вдалося надіслати клієнту {user_id}: {e}")
 
@@ -308,14 +307,44 @@ async def forward_to_admin(message: types.Message, state: FSMContext):
         f"Повідомлення:\n{message.text}"
     )
 
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Спор закрито", callback_data=f"close_dispute_{user_id}")]
+    ])
+
     try:
-        await bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
+        await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
         await message.answer("Ваше повідомлення надіслано адміністратору. Очікуйте відповіді.")
+        await asyncio.sleep(1)
+        await start(message, state)  # ← АВТОСТАРТ ПОСЛЕ ОТПРАВКИ
     except Exception as e:
         await message.answer("Помилка. Спробуйте ще раз.")
         log.error(f"Не вдалося надіслати адміну: {e}")
 
     await state.clear()
+
+# === ЗАКРЫТИЕ СПОРА ===
+@dp.callback_query(F.data.startswith("close_dispute_"))
+async def close_dispute(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Ти не адмін!", show_alert=True)
+        return
+
+    try:
+        user_id = int(callback.data.split("_")[-1])
+    except:
+        await callback.answer("Помилка ID.")
+        return
+
+    await callback.message.edit_text(
+        f"{callback.message.text}\n\nСпор закрито.",
+        parse_mode="Markdown"
+    )
+    await callback.answer("Спор закрито!")
+
+    try:
+        await bot.send_message(user_id, "Спор закрито. Дякуємо за звернення!")
+    except:
+        pass
 
 # === ОДОБРЕНИЕ ===
 @dp.callback_query(F.data.startswith("approve_"))
