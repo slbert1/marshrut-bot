@@ -2,18 +2,17 @@ import os
 import asyncio
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
-
 load_dotenv()
 
 # === КОНФИГ ===
@@ -42,8 +41,8 @@ except Exception as e:
 
 dp = Dispatcher(storage=storage)
 
-# === БД (зберігається на Render) ===
-DB_PATH = '/data/purchases.db'  # Persistent Disk
+# === БД ===
+DB_PATH = '/data/purchases.db'
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 conn.execute("PRAGMA journal_mode=WAL;")
 conn.execute("PRAGMA synchronous=NORMAL;")
@@ -57,7 +56,8 @@ CREATE TABLE IF NOT EXISTS purchases (
     amount INTEGER,
     routes TEXT,
     status TEXT,
-    order_time TEXT
+    order_time TEXT,
+    links TEXT
 )
 ''')
 conn.commit()
@@ -73,7 +73,8 @@ VIDEOS = {
 class Order(StatesGroup):
     waiting_card = State()
 
-def get_routes_keyboard():
+# === КЛАВИАТУРЫ ===
+def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Маршрут №1 — {PRICE_SINGLE} грн", callback_data="buy_khust_route1")],
         [InlineKeyboardButton(text=f"Маршрут №8 — {PRICE_SINGLE} грн", callback_data="buy_khust_route8")],
@@ -82,51 +83,92 @@ def get_routes_keyboard():
         [InlineKeyboardButton(text=f"Всі 4 маршрути — {PRICE_ALL} грн", callback_data="buy_khust_all")],
     ])
 
+def get_back_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+    ])
+
 # === ХЕНДЛЕРИ ===
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer(
+async def start(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    # Проверяем, есть ли купленные ссылки
+    row = cursor.execute(
+        "SELECT links FROM purchases WHERE user_id=? AND status='success'",
+        (user_id,)
+    ).fetchone()
+    if row and row[0]:
+        links = row[0].split(',')
+        text = "Твої куплені маршрути:\n\n" + "\n".join(links)
+        await message.answer(text, reply_markup=get_main_keyboard())
+    else:
+        await message.answer(
+            f"Обери маршрут:\n\n"
+            f"Кожен — {PRICE_SINGLE} грн\n"
+            f"Всі 4 — {PRICE_ALL} грн\n\n"
+            f"Оплата на карту — відео миттєво!",
+            reply_markup=get_main_keyboard()
+        )
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
         f"Обери маршрут:\n\n"
         f"Кожен — {PRICE_SINGLE} грн\n"
         f"Всі 4 — {PRICE_ALL} грн\n\n"
         f"Оплата на карту — відео миттєво!",
-        reply_markup=get_routes_keyboard()
+        reply_markup=get_main_keyboard()
     )
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
     action = callback.data
     routes_map = {
-        "buy_khust_route1": "khust_route1",
-        "buy_khust_route8": "khust_route8",
-        "buy_khust_route6": "khust_route6",
-        "buy_khust_route2": "khust_route2",
-        "buy_khust_all": "khust_route1,khust_route8,khust_route6,khust_route2"
+        "buy_khust_route1": ("khust_route1", PRICE_SINGLE),
+        "buy_khust_route8": ("khust_route8", PRICE_SINGLE),
+        "buy_khust_route6": ("khust_route6", PRICE_SINGLE),
+        "buy_khust_route2": ("khust_route2", PRICE_SINGLE),
+        "buy_khust_all": (",".join(VIDEOS.keys()), PRICE_ALL),
     }
-    routes = routes_map[action]
-    amount = PRICE_ALL if action == "buy_khust_all" else PRICE_SINGLE
-    await state.update_data(amount=amount, routes=routes)
+    routes, amount = routes_map[action]
+    await state.update_data(amount=amount, routes=routes, order_time=datetime.now())
     await callback.message.edit_text(
         f"Введи номер карти (16 цифр):\n"
         f"`4441111111111111`\n"
-        f"Спишеться **{amount} грн**",
-        parse_mode="Markdown"
+        f"Спишеться **{amount} грн**\n\n"
+        f"Час на оплату: 10 хвилин",
+        parse_mode="Markdown",
+        reply_markup=get_back_keyboard()
     )
     await state.set_state(Order.waiting_card)
+    # Таймаут 10 минут
+    asyncio.create_task(timeout_order(state, callback.from_user.id))
+
+async def timeout_order(state: FSMContext, user_id: int):
+    await asyncio.sleep(600)  # 10 минут
+    current_state = await state.get_state()
+    if current_state == Order.waiting_card:
+        await state.clear()
+        try:
+            await bot.send_message(user_id, "⏰ Час вийшов. Почни заново: /start")
+        except:
+            pass
 
 @dp.message(Order.waiting_card)
 async def get_card(message: types.Message, state: FSMContext):
     raw_input = message.text.strip()
     card = ''.join(filter(str.isdigit, raw_input))
     if not raw_input.isdigit() or len(card) != 16:
-        await message.answer("Невірно! Введи тільки 16 цифр, без пробілів.")
+        await message.answer("Невірно! Введи тільки 16 цифр, без пробілів.", reply_markup=get_back_keyboard())
         return
 
     formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
     data = await state.get_data()
     amount = data['amount']
     routes = data['routes']
-    order_time = datetime.now().strftime('%H:%M:%S')
+    order_time = data['order_time'].strftime('%H:%M:%S')
 
     cursor.execute(
         "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time) "
@@ -156,7 +198,8 @@ async def get_card(message: types.Message, state: FSMContext):
         f"Час: {order_time}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{message.from_user.id}_{amount}")]
+        [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{message.from_user.id}_{amount}")],
+        [InlineKeyboardButton(text="Відмовити", callback_data=f"reject_{message.from_user.id}_{amount}")]
     ])
     try:
         await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
@@ -187,24 +230,50 @@ async def approve_order(callback: types.CallbackQuery):
         return
 
     routes = row[0]
-    await send_videos(user_id, routes)
-    cursor.execute("UPDATE purchases SET status='success' WHERE user_id=? AND amount=?", (user_id, amount))
+    links = [VIDEOS[r] for r in routes.split(',')]
+    links_text = "\n".join(links)
+
+    cursor.execute(
+        "UPDATE purchases SET status='success', links=? WHERE user_id=? AND amount=?",
+        (",".join(links), user_id, amount)
+    )
     conn.commit()
 
+    await send_videos(user_id, links_text)
     await callback.message.edit_text(f"{callback.message.text}\n\nОдобрено!", parse_mode="Markdown")
     try:
         await bot.send_message(user_id, "Оплата підтверджена! Відео надіслано.")
     except Exception as e:
         log.warning(f"Юзер {user_id} заблокував бота: {e}")
 
-async def send_videos(user_id: int, routes: str):
-    text = "Оплата підтверджена!\nТвої маршрути:\n\n"
-    for r in routes.split(','):
-        name = r.split('_')[1].upper()
-        url = VIDEOS[r]
-        text += f"Маршрут {name}: {url}\n"
+@dp.callback_query(F.data.startswith("reject_"))
+async def reject_order(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Ти не адмін!", show_alert=True)
+        return
+
+    try:
+        _, user_id, amount = callback.data.split("_")
+        user_id, amount = int(user_id), int(amount)
+    except:
+        await callback.answer("Помилка даних.")
+        return
+
+    cursor.execute("UPDATE purchases SET status='rejected' WHERE user_id=? AND amount=?", (user_id, amount))
+    conn.commit()
+
+    await callback.message.edit_text(f"{callback.message.text}\n\nВідмовлено.", parse_mode="Markdown")
+    try:
+        await bot.send_message(user_id, "Вам відмовлено в продажу.")
+    except Exception as e:
+        log.warning(f"Юзер {user_id} заблокував бота: {e}")
+
+async def send_videos(user_id: int, links_text: str):
+    text = "Оплата підтверджена!\nТвої маршрути:\n\n" + links_text
     try:
         await bot.send_message(user_id, text)
+        # Автостарт
+        await bot.send_message(user_id, "Обери ще маршрут:", reply_markup=get_main_keyboard())
     except Exception as e:
         log.warning(f"Не вдалося надіслати відео {user_id}: {e}")
 
