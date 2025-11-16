@@ -33,7 +33,7 @@ bot = Bot(token=BOT_TOKEN)
 # === Redis для FSM ===
 try:
     import redis.asyncio as redis
-    redis_client = redis.from_url(os.getenv("REDIS_URL"))  # ← ВИПРАВЛЕНО
+    redis_client = redis.from_url(os.getenv("REDIS_URL"))
     from aiogram.fsm.storage.redis import RedisStorage
     storage = RedisStorage(redis_client)
     log.info("Redis підключено — стани не втрачаються!")
@@ -145,9 +145,7 @@ async def start(message: types.Message, state: FSMContext):
         "2. Введи номер карти (16 цифр)\n"
         "3. Переведи гроші на карту нижче\n"
         "4. Чекай підтвердження — відео прийде миттєво!\n\n"
-        "Ціни:\n"
-        f"• Один маршрут — {PRICE_SINGLE} грн\n"
-        f"• Всі 4 — {PRICE_ALL} грн\n\n"
+        f"Ціни:\n• Один маршрут — {PRICE_SINGLE} грн\n• Всі 4 — {PRICE_ALL} грн\n\n"
         f"Оплата: карта `{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}`\n"
         "Питання? — кнопка \"Написати адміністратору\""
     )
@@ -338,7 +336,7 @@ async def add_instructor(message: types.Message):
         parse_mode="Markdown"
     )
 
-# === ОТКАЗ ===
+# === ОТКАЗ — ВИПРАВЛЕНО edit_text ===
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject_init(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
@@ -355,11 +353,9 @@ async def reject_init(callback: types.CallbackQuery, state: FSMContext):
 
     await state.update_data(reject_user_id=user_id, reject_amount=amount)
     await state.set_state(Order.waiting_reject_reason)
-    await callback.message.edit_text(
-        f"{callback.message.text}\n\n"
-        f"Введіть причину відмови:",
-        parse_mode="Markdown"
-    )
+
+    new_text = f"{escape(callback.message.html_text)}\n\nВведіть причину відмови:"
+    await callback.message.edit_text(new_text, parse_mode="HTML")
 
 @dp.message(Order.waiting_reject_reason)
 async def reject_with_reason(message: types.Message, state: FSMContext):
@@ -435,6 +431,7 @@ async def forward_to_admin(message: types.Message, state: FSMContext):
 
     await state.clear()
 
+# === ЗАКРИТИ СПОР — ВИПРАВЛЕНО ===
 @dp.callback_query(F.data.startswith("close_dispute_"))
 async def close_dispute(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -447,10 +444,8 @@ async def close_dispute(callback: types.CallbackQuery):
         await callback.answer("Помилка ID.")
         return
 
-    await callback.message.edit_text(
-        f"{callback.message.text}\n\nСпор закрито.",
-        parse_mode="Markdown"
-    )
+    new_text = f"{escape(callback.message.html_text)}\n\n<b>Спор закрито.</b>"
+    await callback.message.edit_text(new_text, parse_mode="HTML")
     await callback.answer("Спор закрито!")
 
     try:
@@ -458,7 +453,7 @@ async def close_dispute(callback: types.CallbackQuery):
     except:
         pass
 
-# === ОДОБРЕНИЕ + АВТО-ВЫПЛАТЫ ===
+# === ОДОБРЕНИЕ — ВИПРАВЛЕНО edit_text ===
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_order(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -493,7 +488,10 @@ async def approve_order(callback: types.CallbackQuery):
     conn.commit()
 
     await send_videos(user_id, links_text)
-    await callback.message.edit_text(f"{callback.message.text}\n\nОдобрено!", parse_mode="Markdown")
+
+    new_text = f"{escape(callback.message.html_text)}\n\n<b>Одобрено!</b>"
+    await callback.message.edit_text(new_text, parse_mode="HTML")
+
     try:
         await bot.send_message(user_id, "Оплата підтверджена! Відео надіслано.")
     except Exception as e:
@@ -568,7 +566,9 @@ async def pay_instructor(callback: types.CallbackQuery):
     cursor.execute("UPDATE instructors SET total_earned = 0 WHERE code=?", (code,))
     conn.commit()
 
-    formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
+    formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {
+
+card[12:]}"
     await callback.message.edit_text(
         f"<b>{escape(username)} — виплата виконана!</b>\n\n"
         f"Виплачено: <b>{earned} грн</b>\n"
