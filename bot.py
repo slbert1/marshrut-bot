@@ -1,44 +1,68 @@
 import os
 import asyncio
 import sqlite3
+import logging
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 
+# === ЛОГИРОВАНИЕ ===
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
 load_dotenv()
 
+# === КОНФИГ ===
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 PRICE_SINGLE = int(os.getenv('PRICE_SINGLE'))
 PRICE_ALL = int(os.getenv('PRICE_ALL'))
+ADMIN_CARD = os.getenv('ADMIN_CARD')
 
-if not all([BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL]):
-    raise ValueError("BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL — обязательны!")
+if not all([BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL, ADMIN_CARD]):
+    raise ValueError("Заповни .env: BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL, ADMIN_CARD")
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
 
-conn = sqlite3.connect('purchases.db', check_same_thread=False)
+# === Redis для FSM ===
+try:
+    import redis.asyncio as redis
+    redis_client = redis.from_url(os.getenv("REDIS_URL"))
+    from aiogram.fsm.storage.redis import RedisStorage
+    storage = RedisStorage(redis_client)
+    log.info("Redis підключено — стани не втрачаються!")
+except Exception as e:
+    log.warning(f"Redis недоступний: {e}. Використовуємо MemoryStorage (тільки для тесту!)")
+    from aiogram.fsm.storage.memory import MemoryStorage
+    storage = MemoryStorage()
+
+dp = Dispatcher(storage=storage)
+
+# === БД (зберігається на Render) ===
+DB_PATH = '/data/purchases.db'  # Persistent Disk
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+conn.execute("PRAGMA journal_mode=WAL;")
+conn.execute("PRAGMA synchronous=NORMAL;")
 cursor = conn.cursor()
 cursor.execute('''
-    CREATE TABLE IF NOT EXISTS purchases (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        username TEXT,
-        card TEXT,
-        amount INTEGER,
-        routes TEXT,
-        status TEXT,
-        order_time TEXT
-    )
+CREATE TABLE IF NOT EXISTS purchases (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER,
+    username TEXT,
+    card TEXT,
+    amount INTEGER,
+    routes TEXT,
+    status TEXT,
+    order_time TEXT
+)
 ''')
 conn.commit()
 
+# === ДАННІ ===
 VIDEOS = {
     'khust_route1': 'https://youtu.be/mxtsqKmXWSI',
     'khust_route8': 'https://youtu.be/7VwtAAaQWE8',
@@ -58,6 +82,7 @@ def get_routes_keyboard():
         [InlineKeyboardButton(text=f"Всі 4 маршрути — {PRICE_ALL} грн", callback_data="buy_khust_all")],
     ])
 
+# === ХЕНДЛЕРИ ===
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
@@ -93,8 +118,8 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
 async def get_card(message: types.Message, state: FSMContext):
     raw_input = message.text.strip()
     card = ''.join(filter(str.isdigit, raw_input))
-    if len(card) != 16:
-        await message.answer("Невірно! Введи 16 цифр.")
+    if not raw_input.isdigit() or len(card) != 16:
+        await message.answer("Невірно! Введи тільки 16 цифр, без пробілів.")
         return
 
     formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
@@ -114,7 +139,7 @@ async def get_card(message: types.Message, state: FSMContext):
         f"Оплата: **{amount} грн**\n"
         f"Карта: `{formatted_card}`\n"
         f"Переведи на:\n"
-        f"`4441 1144 6012 6863`\n"
+        f"`{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}`\n"
         f"Іжганайтіс Альберт\n\n"
         f"Чекай підтвердження...",
         parse_mode="Markdown"
@@ -133,7 +158,10 @@ async def get_card(message: types.Message, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{message.from_user.id}_{amount}")]
     ])
-    await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
+    try:
+        await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Не вдалося надіслати адміну: {e}")
     await state.clear()
 
 @dp.callback_query(F.data.startswith("approve_"))
@@ -142,9 +170,12 @@ async def approve_order(callback: types.CallbackQuery):
         await callback.answer("Ти не адмін!", show_alert=True)
         return
 
-    _, user_id, amount = callback.data.split("_")
-    user_id = int(user_id)
-    amount = int(amount)
+    try:
+        _, user_id, amount = callback.data.split("_")
+        user_id, amount = int(user_id), int(amount)
+    except:
+        await callback.answer("Помилка даних.")
+        return
 
     row = cursor.execute(
         "SELECT routes FROM purchases WHERE user_id=? AND amount=? AND status='pending'",
@@ -152,7 +183,7 @@ async def approve_order(callback: types.CallbackQuery):
     ).fetchone()
 
     if not row:
-        await callback.answer("Замовлення не знайдено.")
+        await callback.answer("Замовлення вже оброблено або не знайдено.")
         return
 
     routes = row[0]
@@ -163,8 +194,8 @@ async def approve_order(callback: types.CallbackQuery):
     await callback.message.edit_text(f"{callback.message.text}\n\nОдобрено!", parse_mode="Markdown")
     try:
         await bot.send_message(user_id, "Оплата підтверджена! Відео надіслано.")
-    except:
-        pass
+    except Exception as e:
+        log.warning(f"Юзер {user_id} заблокував бота: {e}")
 
 async def send_videos(user_id: int, routes: str):
     text = "Оплата підтверджена!\nТвої маршрути:\n\n"
@@ -174,17 +205,13 @@ async def send_videos(user_id: int, routes: str):
         text += f"Маршрут {name}: {url}\n"
     try:
         await bot.send_message(user_id, text)
-    except:
-        pass
+    except Exception as e:
+        log.warning(f"Не вдалося надіслати відео {user_id}: {e}")
 
+# === ЗАПУСК ===
 async def main():
-    print("Бот запущен! Ручной режим.")
-    while True:
-        try:
-            await dp.start_polling(bot)
-        except Exception as e:
-            print(f"[ОШИБКА] {e}")
-            await asyncio.sleep(5)
+    log.info("Бот запускається на Render Background Worker...")
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
     asyncio.run(main())
