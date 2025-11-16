@@ -82,7 +82,7 @@ class Order(StatesGroup):
     waiting_reject_reason = State()
 
 class Support(StatesGroup):
-    waiting_message = State()  # ← НОВОЕ СОСТОЯНИЕ
+    waiting_message = State()
 
 # === КЛАВИАТУРЫ ===
 def get_main_keyboard():
@@ -193,4 +193,183 @@ async def get_card(message: types.Message, state: FSMContext):
     cursor.execute(
         "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time) "
         "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-        (message.from_user.id, message.from_user.username or "N
+        (message.from_user.id, message.from_user.username or "N/A", card, amount, routes, order_time)
+    )
+    conn.commit()
+
+    await message.answer(
+        f"Оплата: **{amount} грн**\n"
+        f"Карта: `{formatted_card}`\n"
+        f"Переведи на:\n"
+        f"`{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}`\n"
+        f"Іжганайтіс Альберт\n\n"
+        f"Чекай підтвердження...",
+        parse_mode="Markdown"
+    )
+
+    routes_text = ", ".join([r.split('_')[1].upper() for r in routes.split(',')])
+    admin_text = (
+        f"Новий заказ!\n\n"
+        f"Користувач: @{message.from_user.username or 'N/A'}\n"
+        f"ID: `{message.from_user.id}`\n"
+        f"Карта: `{formatted_card}`\n"
+        f"Сума: **{amount} грн**\n"
+        f"Маршрути: {routes_text}\n"
+        f"Час: {order_time}"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{message.from_user.id}_{amount}")],
+        [InlineKeyboardButton(text="Відмовити", callback_data=f"reject_{message.from_user.id}_{amount}")],
+    ])
+    try:
+        await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Не вдалося надіслати адміну: {e}")
+    await state.clear()
+
+# === ОТКАЗ ===
+@dp.callback_query(F.data.startswith("reject_"))
+async def reject_init(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Ти не адмін!", show_alert=True)
+        return
+
+    try:
+        _, user_id, amount = callback.data.split("_", 2)
+        user_id, amount = int(user_id), int(amount)
+    except Exception as e:
+        await callback.answer("Помилка даних.")
+        log.error(f"Reject parse error: {e}")
+        return
+
+    await state.update_data(reject_user_id=user_id, reject_amount=amount)
+    await state.set_state(Order.waiting_reject_reason)
+    await callback.message.edit_text(
+        f"{callback.message.text}\n\n"
+        f"Введіть причину відмови:",
+        parse_mode="Markdown"
+    )
+
+@dp.message(Order.waiting_reject_reason)
+async def reject_with_reason(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    reason = message.text.strip()
+    if len(reason) < 3:
+        await message.answer("Причина занадто коротка. Введіть ще раз:")
+        return
+
+    data = await state.get_data()
+    user_id = data['reject_user_id']
+    amount = data['reject_amount']
+
+    cursor.execute("UPDATE purchases SET status='rejected' WHERE user_id=? AND amount=?", (user_id, amount))
+    conn.commit()
+
+    client_text = f"Вибачте, {reason}.\nЗв'яжіться з адміністратором бота для уточнень."
+
+    try:
+        await bot.send_message(user_id, client_text, reply_markup=get_contact_admin_keyboard())
+        await asyncio.sleep(1)
+        # ФИКС: используем реальное сообщение, а не dummy
+        await start(message, state)  # ← просто рестарт
+    except Exception as e:
+        log.warning(f"Не вдалося надіслати клієнту {user_id}: {e}")
+
+    await message.answer(f"Відмову відправлено: {reason}")
+    await state.clear()
+
+# === ПОДДЕРЖКА ===
+@dp.callback_query(F.data == "contact_admin")
+async def contact_admin(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(Support.waiting_message)
+    await callback.message.answer("Напишіть ваше повідомлення адміністратору:")
+
+@dp.message(Support.waiting_message)
+async def forward_to_admin(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    username = message.from_user.username or "N/A"
+
+    row = cursor.execute(
+        "SELECT routes FROM purchases WHERE user_id=? ORDER BY id DESC LIMIT 1",
+        (user_id,)
+    ).fetchone()
+    route = "невідомо"
+    if row:
+        routes = row[0].split(',')
+        route = ", ".join([r.split('_')[1].upper() for r in routes])
+
+    admin_text = (
+        f"Нове повідомлення від користувача!\n\n"
+        f"Користувач: @{username}\n"
+        f"ID: `{user_id}`\n"
+        f"Маршрут: {route}\n\n"
+        f"Повідомлення:\n{message.text}"
+    )
+
+    try:
+        await bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
+        await message.answer("Ваше повідомлення надіслано адміністратору. Очікуйте відповіді.")
+    except Exception as e:
+        await message.answer("Помилка. Спробуйте ще раз.")
+        log.error(f"Не вдалося надіслати адміну: {e}")
+
+    await state.clear()
+
+# === ОДОБРЕНИЕ ===
+@dp.callback_query(F.data.startswith("approve_"))
+async def approve_order(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Ти не адмін!", show_alert=True)
+        return
+
+    try:
+        _, user_id, amount = callback.data.split("_", 2)
+        user_id, amount = int(user_id), int(amount)
+    except Exception as e:
+        await callback.answer("Помилка даних.")
+        log.error(f"Approve parse error: {e}")
+        return
+
+    row = cursor.execute(
+        "SELECT routes FROM purchases WHERE user_id=? AND amount=? AND status='pending'",
+        (user_id, amount)
+    ).fetchone()
+
+    if not row:
+        await callback.answer("Замовлення вже оброблено.")
+        return
+
+    routes = row[0]
+    links = [VIDEOS[r] for r in routes.split(',')]
+    links_text = "\n".join(links)
+
+    cursor.execute(
+        "UPDATE purchases SET status='success', links=? WHERE user_id=? AND amount=?",
+        (",".join(links), user_id, amount)
+    )
+    conn.commit()
+
+    await send_videos(user_id, links_text)
+    await callback.message.edit_text(f"{callback.message.text}\n\nОдобрено!", parse_mode="Markdown")
+    try:
+        await bot.send_message(user_id, "Оплата підтверджена! Відео надіслано.")
+    except Exception as e:
+        log.warning(f"Юзер {user_id} заблокував бота: {e}")
+
+async def send_videos(user_id: int, links_text: str):
+    text = "Оплата підтверджена!\nТвої маршрути:\n\n" + links_text
+    try:
+        await bot.send_message(user_id, text)
+        await bot.send_message(user_id, "Обери ще маршрут:", reply_markup=get_main_keyboard())
+    except Exception as e:
+        log.warning(f"Не вдалося надіслати відео {user_id}: {e}")
+
+# === ЗАПУСК ===
+async def main():
+    log.info("Бот запускається на Render Background Worker...")
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    asyncio.run(main())
