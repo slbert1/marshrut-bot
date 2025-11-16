@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS instructors (
 )
 ''')
 
-# Добавляем колонки (без ошибок)
+# Добавляем колонки
 for col in ["links", "instructor_code"]:
     try:
         cursor.execute(f"ALTER TABLE purchases ADD COLUMN {col} TEXT")
@@ -436,7 +436,7 @@ async def close_dispute(callback: types.CallbackQuery):
     except:
         pass
 
-# === ОДОБРЕНИЕ + 10% ИНСТРУКТОРУ ===
+# === ОДОБРЕНИЕ + АВТО-ВЫПЛАТЫ ===
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_order(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -477,7 +477,7 @@ async def approve_order(callback: types.CallbackQuery):
     except Exception as e:
         log.warning(f"Юзер {user_id} заблокував бота: {e}")
 
-    # === 10% ИНСТРУКТОРУ ===
+    # === 10% ИНСТРУКТОРУ + АВТО-УВЕДОМЛЕНИЕ ===
     if instructor_code:
         payout = amount * 0.1
         cursor.execute(
@@ -486,17 +486,35 @@ async def approve_order(callback: types.CallbackQuery):
         )
         conn.commit()
 
-        inst_row = cursor.execute("SELECT username FROM instructors WHERE code=?", (instructor_code,)).fetchone()
+        # Получаем данные
+        inst_row = cursor.execute(
+            "SELECT username, total_earned, card FROM instructors WHERE code=?",
+            (instructor_code,)
+        ).fetchone()
+
         if inst_row:
-            try:
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"Покупка по QR `{instructor_code}` (@{inst_row[0]})\n"
-                    f"Виплата: **{payout} грн**",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
+            username, earned, card = inst_row
+            formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
+
+            # АВТО-УВЕДОМЛЕНИЕ ПРИ 100+ ГРН
+            if earned >= 100:
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"*{username} — виплата готова!*\n\n"
+                        f"Накоплено: **{earned} грн**\n"
+                        f"Карта: `{formatted_card}`\n"
+                        f"Після виплати — скинь счётчик!",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(
+                                text=f"Виплатити {earned} грн",
+                                callback_data=f"pay_{instructor_code}"
+                            )]
+                        ]),
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
 
 async def send_videos(user_id: int, links_text: str):
     text = "Оплата підтверджена!\nТвої маршрути:\n\n" + links_text
@@ -505,6 +523,78 @@ async def send_videos(user_id: int, links_text: str):
         await bot.send_message(user_id, "Обери ще маршрут:", reply_markup=get_main_keyboard())
     except Exception as e:
         log.warning(f"Не вдалося надіслати відео {user_id}: {e}")
+
+# === СБРОС ВЫПЛАТЫ ===
+@dp.callback_query(F.data.startswith("pay_"))
+async def pay_instructor(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Ти не адмін!", show_alert=True)
+        return
+
+    code = callback.data.split("_")[1]
+    row = cursor.execute(
+        "SELECT username, total_earned, card FROM instructors WHERE code=?",
+        (code,)
+    ).fetchone()
+
+    if not row:
+        await callback.answer("Інструктор не знайдений.")
+        return
+
+    username, earned, card = row
+    if earned < 100:
+        await callback.answer("Менше 100 грн — не виплачуємо.")
+        return
+
+    cursor.execute("UPDATE instructors SET total_earned = 0 WHERE code=?", (code,))
+    conn.commit()
+
+    formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
+    await callback.message.edit_text(
+        f"*{username} — виплата виконана!*\n\n"
+        f"Виплачено: **{earned} грн**\n"
+        f"Карта: `{formatted_card}`\n"
+        f"Счётчик скинуто.",
+        parse_mode="Markdown"
+    )
+    await callback.answer("Виплата підтверджена!")
+
+# === ВЫПЛАТЫ (ДАШБОРД) ===
+@dp.message(Command("payouts"))
+async def show_payouts(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Тільки адмін.")
+        return
+
+    rows = cursor.execute(
+        "SELECT code, username, card, total_earned FROM instructors WHERE total_earned > 0"
+    ).fetchall()
+
+    if not rows:
+        await message.answer("Немає виплат.")
+        return
+
+    text = "*Виплати інструкторам:*\n\n"
+    keyboard = []
+    total = 0
+
+    for code, username, card, earned in rows:
+        formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
+        status = "Готово до виплати!" if earned >= 100 else f"{earned} грн"
+        text += f"@{username} — `{formatted_card}` — **{status}**\n"
+        if earned >= 100:
+            keyboard.append([InlineKeyboardButton(
+                text=f"Виплатити {earned} грн",
+                callback_data=f"pay_{code}"
+            )])
+        total += earned
+
+    text += f"\n*Всього:* **{total} грн**"
+    await message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None,
+        parse_mode="Markdown"
+    )
 
 # === ЗАПУСК ===
 async def main():
