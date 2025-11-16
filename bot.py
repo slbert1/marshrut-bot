@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
-from html import escape  # ← ДОДАНО ДЛЯ БЕЗПЕКИ
+from html import escape
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +33,7 @@ bot = Bot(token=BOT_TOKEN)
 # === Redis для FSM ===
 try:
     import redis.asyncio as redis
-    redis_client = redis.from_url(os.getenv("REDIS_URL"))
+    redis_client = redis.from_url(os.getenv("REDIS_URL"))  # ← ВИПРАВЛЕНО
     from aiogram.fsm.storage.redis import RedisStorage
     storage = RedisStorage(redis_client)
     log.info("Redis підключено — стани не втрачаються!")
@@ -209,11 +209,25 @@ async def timeout_order(state: FSMContext, user_id: int):
         except:
             pass
 
+# === ВИПРАВЛЕНИЙ get_card ДЛЯ iPhone ===
 @dp.message(Order.waiting_card)
 async def get_card(message: types.Message, state: FSMContext):
-    raw_input = message.text.strip()
-    card = ''.join(filter(str.isdigit, raw_input))
-    if not raw_input.isdigit() or len(card) != 16:
+    text = None
+
+    if message.text:
+        text = message.text.strip()
+    elif message.caption:
+        text = message.caption.strip()
+    elif message.voice or message.photo or message.document:
+        await message.answer("Надішли номер карти як текст (16 цифр).")
+        return
+
+    if not text:
+        await message.answer("Надішли номер карти як текст.")
+        return
+
+    card = ''.join(filter(str.isdigit, text))
+    if len(card) != 16:
         await message.answer("Невірно! Введи тільки 16 цифр.", reply_markup=get_back_keyboard())
         return
 
@@ -225,7 +239,7 @@ async def get_card(message: types.Message, state: FSMContext):
     instructor_code = data.get('instructor_code')
 
     username = message.from_user.username
-    username_display = f"@{username}" if username else "Без username"  # ← БЕЗПЕЧНО
+    username_display = f"@{username}" if username else "Без username"
 
     cursor.execute(
         "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time, instructor_code) "
@@ -245,10 +259,9 @@ async def get_card(message: types.Message, state: FSMContext):
 
     routes_text = ", ".join([r.split('_')[1].upper() for r in routes.split(',')])
     
-    # HTML для адміна
     admin_text = (
         f"Новий заказ!\n\n"
-        f"Користувач: {escape(username_display)}\n"  # ← ESCAPE
+        f"Користувач: {escape(username_display)}\n"
         f"ID: <code>{message.from_user.id}</code>\n"
         f"Карта: <code>{formatted_card}</code>\n"
         f"Сума: <b>{amount} грн</b>\n"
@@ -382,12 +395,13 @@ async def reject_with_reason(message: types.Message, state: FSMContext):
 async def contact_admin(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(Support.waiting_message)
     await callback.message.answer("Напишіть ваше повідомлення адміністратору:")
+    await callback.answer()
 
-@dp.message(Support.waiting_message)
+@dp.message(Support.waiting_message, F.text)
 async def forward_to_admin(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username
-    username_display = f"@{username}" if username else "Без username"  # ← БЕЗПЕЧНО
+    username_display = f"@{username}" if username else "Без username"
 
     row = cursor.execute(
         "SELECT routes FROM purchases WHERE user_id=? ORDER BY id DESC LIMIT 1",
@@ -400,7 +414,7 @@ async def forward_to_admin(message: types.Message, state: FSMContext):
 
     admin_text = (
         f"Нове повідомлення від користувача!\n\n"
-        f"Користувач: {escape(username_display)}\n"  # ← ESCAPE
+        f"Користувач: {escape(username_display)}\n"
         f"ID: <code>{user_id}</code>\n"
         f"Маршрут: {escape(route)}\n\n"
         f"Повідомлення:\n{escape(message.text)}"
@@ -485,7 +499,6 @@ async def approve_order(callback: types.CallbackQuery):
     except Exception as e:
         log.warning(f"Юзер {user_id} заблокував бота: {e}")
 
-    # === 10% ИНСТРУКТОРУ + АВТО-УВЕДОМЛЕНИЕ ===
     if instructor_code:
         payout = amount * 0.1
         cursor.execute(
