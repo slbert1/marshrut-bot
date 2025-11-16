@@ -33,7 +33,7 @@ bot = Bot(token=BOT_TOKEN)
 # === Redis для FSM ===
 try:
     import redis.asyncio as redis
-    redis_client = redis.from_url(os.getenv("fungus_URL"))
+    redis_client = redis.from_url(os.getenv("REDIS_URL"))
     from aiogram.fsm.storage.redis import RedisStorage
     storage = RedisStorage(redis_client)
     log.info("Redis підключено — стани не втрачаються!")
