@@ -2,7 +2,7 @@ import os
 import asyncio
 import sqlite3
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -41,12 +41,12 @@ except Exception as e:
 
 dp = Dispatcher(storage=storage)
 
-# === БД ===
+# === БД (с исправлением links) ===
 DB_PATH = '/data/purchases.db'
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-conn.execute("PRAGMA journal_mode=WAL;")
-conn.execute("PRAGMA synchronous=NORMAL;")
 cursor = conn.cursor()
+
+# Создаём таблицу с links
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS purchases (
     id INTEGER PRIMARY KEY,
@@ -60,6 +60,16 @@ CREATE TABLE IF NOT EXISTS purchases (
     links TEXT
 )
 ''')
+
+# Безопасно добавляем столбец links, если его нет
+try:
+    cursor.execute("ALTER TABLE purchases ADD COLUMN links TEXT")
+    log.info("Столбець 'links' додано в БД!")
+except sqlite3.OperationalError as e:
+    if "duplicate column name" not in str(e):
+        log.error(f"Помилка при додаванні links: {e}")
+    # Иначе — уже есть
+
 conn.commit()
 
 # === ДАННІ ===
@@ -85,7 +95,7 @@ def get_main_keyboard():
 
 def get_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
     ])
 
 # === ХЕНДЛЕРИ ===
@@ -93,7 +103,6 @@ def get_back_keyboard():
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
-    # Проверяем, есть ли купленные ссылки
     row = cursor.execute(
         "SELECT links FROM purchases WHERE user_id=? AND status='success'",
         (user_id,)
@@ -143,16 +152,15 @@ async def handle_purchase(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=get_back_keyboard()
     )
     await state.set_state(Order.waiting_card)
-    # Таймаут 10 минут
     asyncio.create_task(timeout_order(state, callback.from_user.id))
 
 async def timeout_order(state: FSMContext, user_id: int):
-    await asyncio.sleep(600)  # 10 минут
+    await asyncio.sleep(600)  # 10 хвилин
     current_state = await state.get_state()
     if current_state == Order.waiting_card:
         await state.clear()
         try:
-            await bot.send_message(user_id, "⏰ Час вийшов. Почни заново: /start")
+            await bot.send_message(user_id, "Час вийшов. Почни заново: /start")
         except:
             pass
 
@@ -161,7 +169,7 @@ async def get_card(message: types.Message, state: FSMContext):
     raw_input = message.text.strip()
     card = ''.join(filter(str.isdigit, raw_input))
     if not raw_input.isdigit() or len(card) != 16:
-        await message.answer("Невірно! Введи тільки 16 цифр, без пробілів.", reply_markup=get_back_keyboard())
+        await message.answer("Невірно! Введи тільки 16 цифр.", reply_markup=get_back_keyboard())
         return
 
     formatted_card = f"{card[:4]} {card[4:8]} {card[8:12]} {card[12:]}"
@@ -226,7 +234,7 @@ async def approve_order(callback: types.CallbackQuery):
     ).fetchone()
 
     if not row:
-        await callback.answer("Замовлення вже оброблено або не знайдено.")
+        await callback.answer("Замовлення вже оброблено.")
         return
 
     routes = row[0]
@@ -272,7 +280,6 @@ async def send_videos(user_id: int, links_text: str):
     text = "Оплата підтверджена!\nТвої маршрути:\n\n" + links_text
     try:
         await bot.send_message(user_id, text)
-        # Автостарт
         await bot.send_message(user_id, "Обери ще маршрут:", reply_markup=get_main_keyboard())
     except Exception as e:
         log.warning(f"Не вдалося надіслати відео {user_id}: {e}")
