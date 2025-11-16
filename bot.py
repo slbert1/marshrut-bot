@@ -223,10 +223,14 @@ async def get_card(message: types.Message, state: FSMContext):
     order_time = datetime.fromisoformat(data['order_time']).strftime('%H:%M:%S')
     instructor_code = data.get('instructor_code')
 
+    # ВИПРАВЛЕНО: username без @N/A
+    username = message.from_user.username
+    username_display = f"@{username}" if username else "Без username"
+
     cursor.execute(
         "INSERT INTO purchases (user_id, username, card, amount, routes, status, order_time, instructor_code) "
         "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
-        (message.from_user.id, message.from_user.username or "N/A", card, amount, routes, order_time, instructor_code)
+        (message.from_user.id, username or "N/A", card, amount, routes, order_time, instructor_code)
     )
     conn.commit()
 
@@ -242,7 +246,7 @@ async def get_card(message: types.Message, state: FSMContext):
     routes_text = ", ".join([r.split('_')[1].upper() for r in routes.split(',')])
     admin_text = (
         f"Новий заказ!\n\n"
-        f"Користувач: @{message.from_user.username or 'N/A'}\n"
+        f"Користувач: {username_display}\n"
         f"ID: `{message.from_user.id}`\n"
         f"Карта: `{formatted_card}`\n"
         f"Сума: **{amount} грн**\n"
