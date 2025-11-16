@@ -78,7 +78,7 @@ VIDEOS = {
 
 class Order(StatesGroup):
     waiting_card = State()
-    waiting_reject_reason = State()  # ← НОВОЕ СОСТОЯНИЕ
+    waiting_reject_reason = State()
 
 # === КЛАВИАТУРЫ ===
 def get_main_keyboard():
@@ -215,7 +215,7 @@ async def get_card(message: types.Message, state: FSMContext):
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{message.from_user.id}_{amount}")],
-        [InlineKeyboardButton(text="Відмовити", callback_data=f"reject_init_{message.from_user.id}_{amount}")]
+        [InlineKeyboardButton(text="Відмовити", callback_data=f"reject_{message.from_user.id}_{amount}")],  # ← УНИФИЦИРОВАНО
     ])
     try:
         await bot.send_message(ADMIN_ID, admin_text, reply_markup=keyboard, parse_mode="Markdown")
@@ -223,18 +223,19 @@ async def get_card(message: types.Message, state: FSMContext):
         log.error(f"Не вдалося надіслати адміну: {e}")
     await state.clear()
 
-# === ОТКАЗ: ШАГ 1 — Запрос причины ===
-@dp.callback_query(F.data.startswith("reject_init_"))
+# === ОТКАЗ: Сразу запрашиваем причину ===
+@dp.callback_query(F.data.startswith("reject_"))
 async def reject_init(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Ти не адмін!", show_alert=True)
         return
 
     try:
-        _, user_id, amount = callback.data.split("_", 2)
+        _, user_id, amount = callback.data.split("_", 2)  # ← 2 части
         user_id, amount = int(user_id), int(amount)
-    except:
+    except Exception as e:
         await callback.answer("Помилка даних.")
+        log.error(f"Reject parse error: {e}, data: {callback.data}")
         return
 
     await state.update_data(reject_user_id=user_id, reject_amount=amount)
@@ -245,7 +246,7 @@ async def reject_init(callback: types.CallbackQuery, state: FSMContext):
         parse_mode="Markdown"
     )
 
-# === ОТКАЗ: ШАГ 2 — Причина введена ===
+# === ОТКАЗ: Причина введена ===
 @dp.message(Order.waiting_reject_reason)
 async def reject_with_reason(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -263,7 +264,6 @@ async def reject_with_reason(message: types.Message, state: FSMContext):
     cursor.execute("UPDATE purchases SET status='rejected' WHERE user_id=? AND amount=?", (user_id, amount))
     conn.commit()
 
-    # Текст клиенту
     client_text = (
         f"Вибачте, {reason}.\n"
         f"Зв'яжіться з адміністратором бота для уточнень."
@@ -275,9 +275,15 @@ async def reject_with_reason(message: types.Message, state: FSMContext):
             client_text,
             reply_markup=get_contact_admin_keyboard()
         )
-        # Возврат в меню с сохранёнными ссылками
         await asyncio.sleep(1)
-        await start(types.Message(chat=types.Chat(id=user_id, type='private'), from_user=types.User(id=user_id, is_bot=False, first_name=''), text='/start'), state)
+        # Возврат в меню
+        dummy_msg = types.Message(
+            chat=types.Chat(id=user_id, type='private'),
+            from_user=types.User(id=user_id, is_bot=False, first_name=''),
+            text='/start',
+            message_id=0
+        )
+        await start(dummy_msg, state)
     except Exception as e:
         log.warning(f"Не вдалося надіслати клієнту {user_id}: {e}")
 
@@ -288,7 +294,6 @@ async def reject_with_reason(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "contact_admin")
 async def contact_admin(callback: types.CallbackQuery):
     await callback.message.answer("Напишіть ваше повідомлення, і воно буде надіслано адміністратору.")
-    # Дальше — можно добавить FSM для пересылки, но пока просто даём свободу
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_order(callback: types.CallbackQuery):
@@ -297,10 +302,11 @@ async def approve_order(callback: types.CallbackQuery):
         return
 
     try:
-        _, user_id, amount = callback.data.split("_")
+        _, user_id, amount = callback.data.split("_", 2)
         user_id, amount = int(user_id), int(amount)
-    except:
+    except Exception as e:
         await callback.answer("Помилка даних.")
+        log.error(f"Approve parse error: {e}")
         return
 
     row = cursor.execute(
