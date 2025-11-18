@@ -196,12 +196,21 @@ async def reject_init(c: types.CallbackQuery, state: FSMContext):
 
 @dp.message(Order.waiting_reject_reason)
 async def reject_reason(m: types.Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID: return
+    if m.from_user.id != ADMIN_ID:
+        return
+
     data = await state.get_data()
     cursor.execute("UPDATE purchases SET status='rejected' WHERE user_id=? AND amount=? AND status='pending'",
                    (data['rej_uid'], data['rej_amt']))
     conn.commit()
-    await bot.send_message(data['rej_uid'], f"Оплата не підтверджена.\nПричина: {m.text}\nЗвернись до адміна.")
+
+    # ← Ось тут додана клавіатура!
+    await bot.send_message(
+        data['rej_uid'],
+        f"Оплата не підтверджена.\nПричина: {m.text}\nЗвернись до адміна.",
+        reply_markup=get_contact_admin_keyboard()
+    )
+
     await m.answer("Відмову відправлено")
     await state.clear()
 
