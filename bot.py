@@ -161,12 +161,13 @@ async def get_last4(m: types.Message, state: FSMContext):
     if inst_code:
         admin_text += f"\nРеферал: <code>{inst_code}</code>"
 
-    await bot.send_message(ADMIN_ID, admin_text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{m.from_user.id}_{amount}")],
-            [InlineKeyboardButton(text="Відмовити", callback_data=f"reject_{m.from_user.id}_{amount}"]]
-        ]),
-        parse_mode="HTML")
+   await bot.send_message(ADMIN_ID, admin_text,
+    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Одобрити", callback_data=f"approve_{m.from_user.id}_{amount}")],
+        [InlineKeyboardButton(text="Відмовити", callback_data=f"reject_{m.from_user.id}_{amount}")]
+    ]),
+    parse_mode="HTML"
+)
     await state.clear()
 
 # ОДОБРИТИ
