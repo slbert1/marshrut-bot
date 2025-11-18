@@ -249,7 +249,30 @@ async def my(m: types.Message):
         await m.answer("Твої маршрути:\n\n" + row[0].replace(',','\n'))
     else:
         await m.answer("Нічого не куплено")
+# ← тут весь попередній код до кінця, а в кінці перед main() додай це:
 
+class Support(StatesGroup):
+    waiting_support_message = State()
+
+@dp.callback_query(F.data == "contact_admin")
+async def contact_admin_callback(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    await c.message.answer(
+        "Напиши своє питання — я передам адміну:",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    await state.set_state(Support.waiting_support_message)
+    await state.update_data(from_user=c.from_user.id, from_username=c.from_user.username or "Без імені")
+
+@dp.message(Support.waiting_support_message)
+async def forward_to_admin(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    text = (f"Повідомлення в підтримку:\n"
+            f"Від: @{escape(data['from_username'])} (ID: {data['from_user']})\n\n"
+            f"{escape(m.text)}")
+    await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+    await m.answer("Повідомлення відправлено! Очікуй відповіді.")
+    await state.clear()
 async def main():
     await dp.start_polling(bot)
 
