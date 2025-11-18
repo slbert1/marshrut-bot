@@ -13,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove, InputFile
 from dotenv import load_dotenv
 from html import escape
+from aiogram.types import BufferedInputFile
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -297,7 +298,7 @@ async def add_instructor(m: types.Message):
     bio.seek(0)
 
     await m.answer_photo(
-        InputFile(bio, filename=f"ref_{code}.png"),
+        photo=types.BufferedInputFile(bio.read(), filename=f"ref_{code}.png"),
         caption=f"Інструктор успішно додано!\n\n"
                 f"Код: <code>{code}</code>\n"
                 f"Ім'я: @{username}\n"
