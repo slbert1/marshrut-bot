@@ -1,4 +1,4 @@
-# ХУСТ ПДР БОТ — ФІНАЛЬНА РОБОЧА ВЕРСІЯ (всі кнопки працюють!)
+# ХУСТ ПДР БОТ — ФІНАЛЬНА ВЕРСІЯ (карта приймається, кнопки працюють)
 import os
 import asyncio
 import sqlite3
@@ -30,7 +30,6 @@ if not all([BOT_TOKEN, ADMIN_ID, PRICE_SINGLE, PRICE_ALL, ADMIN_CARD]):
 
 bot = Bot(token=BOT_TOKEN)
 
-# Redis або Memory
 try:
     import redis.asyncio as redis
     redis_client = redis.from_url(os.getenv("REDIS_URL"))
@@ -43,7 +42,6 @@ except:
 
 dp = Dispatcher(storage=storage)
 
-# База
 conn = sqlite3.connect('/data/purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 
@@ -95,20 +93,19 @@ def get_contact_admin_keyboard():
 
 # === START ===
 @dp.message(Command("start"))
-async def start(message: types.Message, state: FSMContext):
+async def start(m: types.Message, state: FSMContext):
     await state.clear()
-    user_id = message.from_user.id
-    args = message.text.split()
+    args = m.text.split()
     if len(args)>1 and args[1].startswith("inst_"):
         await state.update_data(instructor_code=args[1].split("_",1)[1])
 
-    row = cursor.execute("SELECT links FROM purchases WHERE user_id=? AND status='success' ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
+    row = cursor.execute("SELECT links FROM purchases WHERE user_id=? AND status='success' ORDER BY id DESC LIMIT 1", (m.from_user.id,)).fetchone()
     if row and row[0]:
-        await message.answer("Твої маршрути:\n\n" + row[0].replace(',', '\n'), reply_markup=get_main_keyboard())
+        await m.answer("Твої маршрути:\n\n" + row[0].replace(',', '\n'), reply_markup=get_main_keyboard())
     else:
-        await message.answer(
-            f"Вітаю в Хуст ПДР Бот!\n\nОбери маршрут → введи карту → оплати → отримай відео миттєво!\n\n"
-            f"Один маршрут — {PRICE_SINGLE} грн\nВсі 4 — {PRICE_ALL} грн\n\n"
+        await m.answer(
+            f"Вітаю в Хуст ПДР Бот!\n\nОбери маршрут → введи карту → оплати → отримай відео!\n\n"
+            f"Один — {PRICE_SINGLE} грн │ Всі 4 — {PRICE_ALL} грн\n\n"
             f"Карта: `{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}`",
             reply_markup=get_main_keyboard(), parse_mode="Markdown")
 
@@ -136,7 +133,7 @@ async def handle_purchase(c: types.CallbackQuery, state: FSMContext):
     asyncio.create_task(timeout_order(state, c.from_user.id))
 
     await c.message.edit_text(
-        f"Введи номер карти (16 цифр):\n`4441111111111111`\nСума: **{amount} грн**\nЧас: 10 хвилин",
+        f"Введи номер карти (16 цифр):\n`4441111111111111`\nСума: **{amount} грн**\nЧас: 10 хв",
         parse_mode="Markdown", reply_markup=get_back_keyboard())
     await state.set_state(Order.waiting_card)
 
@@ -144,27 +141,30 @@ async def timeout_order(state: FSMContext, user_id: int):
     await asyncio.sleep(600)
     if await state.get_state() == Order.waiting_card:
         await state.clear()
-        try: await bot.send_message(user_id, "Час вийшов /start")
+        try: await bot.send_message(user_id, "Час вийшов. Почни заново: /start")
         except: pass
 
 @dp.message(Order.waiting_card)
 async def get_card(m: types.Message, state: FSMContext):
     card = ''.join(filter(str.isdigit, m.text or ""))
-    if len(card)!=16 or not luhn_check(card):
-        await m.answer("Тільки 16 цифр!", reply_markup=get_back_keyboard())
+    if len(card) != 16 or not luhn_check(card):
+        await m.answer("Помилка! Введи рівно 16 цифр.", reply_markup=get_back_keyboard())
         return
 
     data = await state.get_data()
-    amount, routes, instructor_code = data['amount'], data['routes'], data.get('instructor_code')
+    amount = data['amount']
+    routes = data['routes']
+    instructor_code = data.get('instructor_code')
 
+    # ВИПРАВЛЕНИЙ INSERT — тепер 9 значень під 9 колонок!
     cursor.execute("""INSERT INTO purchases 
         (user_id, username, card_hash, card_last4, amount, routes, status, order_time, instructor_code)
-        VALUES (?,?,?,?,'pending',?,?)""",
-        (m.from_user.id, m.from_user.username or "N/A", hash_card(card), card[-4:], amount, routes,
-         datetime.now().strftime("%H:%M"), instructor_code))
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+        (m.from_user.id, m.from_user.username or "N/A", hash_card(card), card[-4:],
+         amount, routes, datetime.now().strftime("%H:%M"), instructor_code))
     conn.commit()
 
-    await m.answer(f"Чекай підтвердження оплати {amount} грн...")
+    await m.answer(f"Очікуємо оплату {amount} грн на карту:\n`{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}`\nЧекай підтвердження...", parse_mode="Markdown")
 
     routes_text = ", ".join(r.split("_")[1].upper() for r in routes.split(","))
     admin_text = (f"Новий заказ!\n\nКористувач: {escape(m.from_user.username or 'N/A')}\n"
@@ -204,10 +204,10 @@ async def approve_order(c: types.CallbackQuery):
 
     try:
         await bot.send_message(uid, "Оплата підтверджена!\nТвої маршрути:\n\n" + links_text)
-        await bot.send_message(uid, "Обери ще:", reply_markup=get_main_keyboard())
+        await bot.send_message(uid, "Можеш купити ще:", reply_markup=get_main_keyboard())
     except: pass
 
-    await c.message.edit_text(c.message.html_text + "\n\n<b>Одобрено!</b>", parse_mode="HTML")
+    await c.message.edit_text(c.message.html_text + "\n\n<b>Одобрено та видано!</b>", parse_mode="HTML")
 
     if inst_code:
         payout = amt * 0.1
@@ -215,7 +215,7 @@ async def approve_order(c: types.CallbackQuery):
         conn.commit()
         inst = cursor.execute("SELECT username, total_earned FROM instructors WHERE code=?", (inst_code,)).fetchone()
         if inst and inst[1] >= 100:
-            await bot.send_message(ADMIN_ID, f"<b>{escape(inst[0])} — виплата {inst[1]} грн</b>",
+            await bot.send_message(ADMIN_ID, f"<b>{escape(inst[0])} — можна виплатити {inst[1]} грн</b>",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"Виплатити {inst[1]} грн", callback_data=f"pay_{inst_code}")]]),
                 parse_mode="HTML")
 
@@ -274,14 +274,14 @@ async def cancel_all(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     c = cursor.execute("UPDATE purchases SET status='cancelled' WHERE status='pending'").rowcount
     conn.commit()
-    await m.answer(f"Скасовано {c} замовлень")
+    await m.answer(f"Скасовано {c} активних замовлень!")
 
 @dp.message(Command("cleanup"))
 async def cleanup(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     d = cursor.execute("DELETE FROM purchases WHERE status IN ('cancelled','pending')").rowcount
     conn.commit()
-    await m.answer(f"Видалено {d} тестових записів!")
+    await m.answer(f"Видалено {d} тестових записів!\nСтатистика чиста!")
 
 @dp.message(Command("my"))
 async def my(m: types.Message):
