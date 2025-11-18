@@ -123,7 +123,7 @@ async def buy(c: types.CallbackQuery, state: FSMContext):
         "buy_route1": ("khust_route1", PRICE_SINGLE),
         "buy_route8": ("khust_route8", PRICE_SINGLE),
         "buy_route6": ("khust_route6", PRICE_SINGLE),
-        "buy_route2": ("khust2", PRICE_SINGLE),
+        "buy_route2": ("khust_route2", PRICE_SINGLE),
         "buy_all": (",".join(VIDEOS.keys()), PRICE_ALL),
     }
     routes, amount = routes_map[c.data]
