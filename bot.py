@@ -1,4 +1,4 @@
-# ВИПРАВЛЕНИЙ ТА ОПТИМІЗОВАНИЙ КОД БОТА (без помилки JSON serializable)
+# ВИПРАВЛЕНИЙ ТА ОПТИМІЗОВАНИЙ КОД БОТА (без помилки JSON serializable + команда /cancel_all)
 # Усі баги виправлено, таймаут НЕ зберігається в state → працює з Redis
 
 import os
@@ -323,6 +323,25 @@ async def get_card(message: types.Message, state: FSMContext):
         log.error(f"Не вдалося надіслати адміну: {e}")
 
     await state.clear()
+
+# === НОВА АДМІНСЬКА КОМАНДА: скинути всі pending-замовлення ===
+@dp.message(Command("cancel_all"))
+async def cancel_all_pending(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Тільки адмін може це робити.")
+        return
+
+    cancelled = cursor.execute(
+        "UPDATE purchases SET status='cancelled' WHERE status='pending'"
+    ).rowcount
+    conn.commit()
+
+    await message.answer(
+        f"Успішно скасовано {cancelled} активних замовлень!\n"
+        f"Тепер можна тестувати без обмежень.",
+        parse_mode="HTML"
+    )
+    log.info(f"Адмін скасував {cancelled} pending-замовлень")
 
 # === ІНСТРУКТОР ===
 @dp.message(Command("add_instructor"))
