@@ -3,6 +3,9 @@ import os
 import asyncio
 import sqlite3
 import logging
+import gspread
+import json
+from datetime import datetime
 from datetime import datetime
 import qrcode
 from io import BytesIO
@@ -24,6 +27,29 @@ ADMIN_ID = int(os.getenv('ADMIN_ID'))
 PRICE_SINGLE = int(os.getenv('PRICE_SINGLE', '100'))
 PRICE_ALL = int(os.getenv('PRICE_ALL', '350'))
 ADMIN_CARD = os.getenv('ADMIN_CARD')
+
+# === GOOGLE SHEETS БЕЗ ФАЙЛУ (для Render Web Service) ===
+
+# Беремо ключ з змінної середовища (ти її зараз додаси в Render)
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+
+try:
+    credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+    gc = gspread.service_account_from_dict(credentials_dict)
+    sh = gc.open_by_key("d3c6898c72263ea4b39e1cb2dc680105babf50d7")
+    worksheet = sh.sheet1
+except Exception as e:
+    print("Помилка Google Sheets:", e)
+    worksheet = None
+
+async def log_to_sheets(action: str, code: str = "", username: str = "", amount: float = 0, comment: str = ""):
+    if worksheet is None:
+        return
+    try:
+        now = datetime.now().strftime("%d.%m.%Y %H:%M")
+        worksheet.append_row([now, code, username, f"{amount:.2f}", action, comment])
+    except Exception as e:
+        print("Не вдалося записати в Google Sheets:", e)
 
 if not all([BOT_TOKEN, ADMIN_ID, ADMIN_CARD]):
     raise ValueError("Заповни .env правильно: BOT_TOKEN, ADMIN_ID, ADMIN_CARD")
