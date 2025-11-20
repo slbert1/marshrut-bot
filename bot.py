@@ -37,7 +37,7 @@ try:
     credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
     gc = gspread.service_account_from_dict(credentials_dict)
     sh = gc.open_by_key("d3c6898c72263ea4b39e1cb2dc680105babf50d7")
-    worksheet = sh.worksheet("Лист1")   # ← стало (або твоя точна назва вкладки)
+    worksheet = sh.worksheet("hust_bot")
 except Exception as e:
     print("Помилка Google Sheets:", e)
     worksheet = None
