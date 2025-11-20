@@ -5,3 +5,5 @@ aiogram
 python-dotenv
 qrcode[pil]
 Pillow
+gspread
+oauth2client
