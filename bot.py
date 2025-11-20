@@ -422,10 +422,25 @@ async def confirm_payout(c: types.CallbackQuery):
         return await c.answer("Вже виплачено", show_alert=True)
 
     amount = row[1]
+    username = row[0]
+
+    # Обнуляємо в базі
     cursor.execute("UPDATE instructors SET total_earned = 0 WHERE code=?", (code,))
     conn.commit()
 
-    await c.message.edit_text(f"Виплата <b>{amount:.2f} грн</b> підтверджена та обнулена для @{row[0]} ({code})")
+    # Записуємо в Google Sheets
+    await log_to_sheets(
+        action="виплата інструктору",
+        code=code,
+        username=f"@{username}",
+        amount=amount,
+        comment="підтверджено адміном"
+    )
+
+    # Повідомлення адміну
+    await c.message.edit_text(
+        f"Виплата <b>{amount:.2f} грн</b> підтверджена та обнулена для @{username} ({code})\n\nЗаписано в Google Sheets"
+    )
     await c.answer("Готово!")
 
 if __name__ == '__main__':
