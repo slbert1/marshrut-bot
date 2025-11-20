@@ -335,5 +335,72 @@ async def main():
     log.info("Бот запущено успішно!")
     await dp.start_polling(bot)
 
+# === ВИПЛАТИ ІНСТРУКТОРАМ ===
+@dp.message(Command("payouts"))
+async def payouts(m: types.Message):
+    if m.from_user.id != ADMIN_ID:
+        return await m.answer("Доступ заборонено")
+
+    rows = cursor.execute(
+        "SELECT code, username, total_earned FROM instructors WHERE total_earned > 0 ORDER BY total_earned DESC"
+    ).fetchall()
+
+    if not rows:
+        return await m.answer("Немає виплат інструкторам")
+
+    text = "<b>Виплати інструкторам:</b>\n\n"
+    keyboard = []
+    for code, username, earned in rows:
+        text += f"• @{username} (<code>{code}</code>) — <b>{earned:.2f} грн</b>\n"
+        keyboard.append([InlineKeyboardButton(
+            text=f"Виплатити {earned:.2f} грн → @{username}",
+            callback_data=f"payout_{code}"
+        )])
+    keyboard.append([InlineKeyboardButton(text="Оновити список", callback_data="refresh_payouts")])
+
+    await m.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "refresh_payouts")
+async def refresh_payouts(c: types.CallbackQuery):
+    await payouts(c.message)
+
+
+@dp.callback_query(F.data.startswith("payout_"))
+async def payout_confirm(c: types.CallbackQuery):
+    if c.from_user.id != ADMIN_ID:
+        return
+    code = c.data.split("_")[1]
+    row = cursor.execute("SELECT username, total_earned FROM instructors WHERE code=?", (code,)).fetchone()
+    if not row or row[1] <= 0:
+        return await c.answer("Немає що виплачувати", show_alert=True)
+
+    username, amount = row
+    await c.message.edit_text(
+        f"Підтвердити виплату <b>{amount:.2f} грн</b> інструктору @{username} (код {code})?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Так, виплатив", callback_data=f"confirm_payout_{code}")],
+            [InlineKeyboardButton(text="Скасувати", callback_data="refresh_payouts")]
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data.startswith("confirm_payout_"))
+async def confirm_payout(c: types.CallbackQuery):
+    if c.from_user.id != ADMIN_ID:
+        return
+    code = c.data.split("_")[2]
+    row = cursor.execute("SELECT username, total_earned FROM instructors WHERE code=?", (code,)).fetchone()
+    if not row or row[1] <= 0:
+        return await c.answer("Вже виплачено", show_alert=True)
+
+    amount = row[1]
+    cursor.execute("UPDATE instructors SET total_earned = 0 WHERE code=?", (code,))
+    conn.commit()
+
+    await c.message.edit_text(f"Виплата <b>{amount:.2f} грн</b> підтверджена та обнулена для @{row[0]} ({code})")
+    await c.answer("Готово!")
+
 if __name__ == '__main__':
     asyncio.run(main())
