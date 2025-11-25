@@ -128,7 +128,7 @@ async def start(m: types.Message, state: FSMContext):
     text = (f"Вітаю в Хуст ПДР Бот!\n\n"
             f"Обери маршрут → оплати → введи останні 4 цифри карти → отримай відео!\n\n"
             f"Один маршрут — {PRICE_SINGLE} грн │ Всі 4 — {PRICE_ALL} грн\n\n"
-            f"Карта:\n`{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}`")
+           f"Оплата на цю карту:\n\n**{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}**\n\nПереводь суму — відео миттєво!")
     if instructor_code:
         text += f"\n\nТи прийшов від інструктора: <b>{instructor_code}</b>"
 
