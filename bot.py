@@ -178,7 +178,13 @@ async def get_last4(m: types.Message, state: FSMContext):
          datetime.now().strftime("%H:%M"), inst_code))
     conn.commit()
 
-    await m.answer("Дякую! Чекаю перевірки оплати...")
+       await m.answer(
+        f"Дякую! Оплата на суму <b>{amount} грн</b>\n\n"
+        f"Переконайся, що переклав на правильну карту:\n\n"
+        f"**{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}**\n\n"
+        f"Чекаю підтвердження від адміна...",
+        parse_mode="HTML"
+    )
 
     routes_txt = ", ".join(r.replace("khust_route", "№").replace("khust", "№").upper() for r in routes.split(","))
     admin_text = (f"Новий заказ!\n\n"
