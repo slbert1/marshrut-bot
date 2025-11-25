@@ -96,12 +96,40 @@ class Support(StatesGroup):
 # === КЛАВІАТУРИ ===
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Тестове відео (безкоштовно)", callback_data="test_video")],
         [InlineKeyboardButton(text=f"Маршрут №1 — {PRICE_SINGLE} грн", callback_data="buy_route1")],
         [InlineKeyboardButton(text=f"Маршрут №8 — {PRICE_SINGLE} грн", callback_data="buy_route8")],
         [InlineKeyboardButton(text=f"Маршрут №6 — {PRICE_SINGLE} грн", callback_data="buy_route6")],
         [InlineKeyboardButton(text=f"Маршрут №2 — {PRICE_SINGLE} грн", callback_data="buy_route2")],
         [InlineKeyboardButton(text=f"Всі 4 маршрути — {PRICE_ALL} грн", callback_data="buy_all")],
     ])
+# === ТЕСТОВЕ ВІДЕО БЕЗКОШТОВНО ===
+@dp.callback_query(F.data == "test_video")
+async def send_test_video(c: types.CallbackQuery):
+    test_link = "https://youtu.be/0cbWy8oLXS0"
+    
+    await c.message.answer(
+        "Ось тестове відео — подивись, яка якість!\n\n"
+        f"{test_link}\n\n"
+        "Готовий купити повний маршрут? Обери нижче",
+        reply_markup=get_main_keyboard()
+    )
+
+    # Логування адміну
+    username = c.from_user.username
+    user_display = f"@{username}" if username else "Без username"
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    await bot.send_message(
+        ADMIN_ID,
+        f"<b>Тестове відео переглянуто!</b>\n\n"
+        f"Користувач: {escape(user_display)}\n"
+        f"ID: <code>{c.from_user.id}</code>\n"
+        f"Час: {now}",
+        parse_mode="HTML"
+    )
+    
+    await c.answer()
 
 def get_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="back")]])
