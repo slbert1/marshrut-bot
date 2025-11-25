@@ -1,11 +1,9 @@
-# ХУСТ ПДР БОТ — ФІНАЛЬНА ВЕРСІЯ БЕЗ ПОМИЛОК (18.11.2025)
+# ХУСТ ПДР БОТ — ФІНАЛЬНА ВЕРСІЯ З ТЕСТОВИМ ВІДЕО + ПОВНА КАРТА (25.11.2025)
 import os
 import asyncio
 import sqlite3
 import logging
-import gspread
 import json
-from datetime import datetime
 from datetime import datetime
 import qrcode
 from io import BytesIO
@@ -13,10 +11,9 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove, InputFile
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from dotenv import load_dotenv
 from html import escape
-from aiogram.types import BufferedInputFile
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -24,40 +21,17 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
-PRICE_SINGLE = int(os.getenv('PRICE_SINGLE', '100'))
-PRICE_ALL = int(os.getenv('PRICE_ALL', '350'))
-ADMIN_CARD = os.getenv('ADMIN_CARD')
-
-# === GOOGLE SHEETS БЕЗ ФАЙЛУ (для Render Web Service) ===
-
-# Беремо ключ з змінної середовища (ти її зараз додаси в Render)
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
-
-try:
-    credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-    gc = gspread.service_account_from_dict(credentials_dict)
-    sh = gc.open_by_key("d3c6898c72263ea4b39e1cb2dc680105babf50d7")
-    worksheet = sh.get_worksheet(0)   # ← перша вкладка, хоч як вона називається
-except Exception as e:
-    print("Помилка Google Sheets:", e)
-    worksheet = None
-
-async def log_to_sheets(action: str, code: str = "", username: str = "", amount: float = 0, comment: str = ""):
-    if worksheet is None:
-        return
-    try:
-        now = datetime.now().strftime("%d.%m.%Y %H:%M")
-        worksheet.append_row([now, code, username, f"{amount:.2f}", action, comment])
-    except Exception as e:
-        print("Не вдалося записати в Google Sheets:", e)
+PRICE_SINGLE = int(os.getenv('PRICE_SINGLE', '150'))
+PRICE_ALL = int(os.getenv('PRICE_ALL', '500'))
+ADMIN_CARD = os.getenv('ADMIN_CARD')  # ← 16 цифр без пробілів
 
 if not all([BOT_TOKEN, ADMIN_ID, ADMIN_CARD]):
-    raise ValueError("Заповни .env правильно: BOT_TOKEN, ADMIN_ID, ADMIN_CARD")
+    raise ValueError("Заповни .env: BOT_TOKEN, ADMIN_ID, ADMIN_CARD")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# === БАЗА ДАНИХ ===
+# === БД ===
 conn = sqlite3.connect('/data/purchases.db', check_same_thread=False)
 cursor = conn.cursor()
 
@@ -103,33 +77,6 @@ def get_main_keyboard():
         [InlineKeyboardButton(text=f"Маршрут №2 — {PRICE_SINGLE} грн", callback_data="buy_route2")],
         [InlineKeyboardButton(text=f"Всі 4 маршрути — {PRICE_ALL} грн", callback_data="buy_all")],
     ])
-# === ТЕСТОВЕ ВІДЕО БЕЗКОШТОВНО ===
-@dp.callback_query(F.data == "test_video")
-async def send_test_video(c: types.CallbackQuery):
-    test_link = "https://youtu.be/0cbWy8oLXS0"
-    
-    await c.message.answer(
-        "Ось тестове відео — подивись, яка якість!\n\n"
-        f"{test_link}\n\n"
-        "Готовий купити повний маршрут? Обери нижче",
-        reply_markup=get_main_keyboard()
-    )
-
-    # Логування адміну
-    username = c.from_user.username
-    user_display = f"@{username}" if username else "Без username"
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
-
-    await bot.send_message(
-        ADMIN_ID,
-        f"<b>Тестове відео переглянуто!</b>\n\n"
-        f"Користувач: {escape(user_display)}\n"
-        f"ID: <code>{c.from_user.id}</code>\n"
-        f"Час: {now}",
-        parse_mode="HTML"
-    )
-    
-    await c.answer()
 
 def get_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="back")]])
@@ -142,7 +89,6 @@ def get_contact_admin_keyboard():
 async def start(m: types.Message, state: FSMContext):
     await state.clear()
     instructor_code = None
-
     args = m.text.split()
     if len(args) > 1 and args[1].startswith("inst_"):
         instructor_code = args[1][5:]
@@ -150,13 +96,20 @@ async def start(m: types.Message, state: FSMContext):
 
     row = cursor.execute("SELECT links FROM purchases WHERE user_id=? AND status='success' ORDER BY id DESC LIMIT 1", (m.from_user.id,)).fetchone()
     if row and row[0]:
-        await m.answer("Твої маршрути:\n\n" + row[0].replace(',', '\n'), reply_markup=get_main_keyboard())
+        await m.answer("Твої куплені маршрути:\n\n" + row[0].replace(',', '\n'), reply_markup=get_main_keyboard())
         return
 
-    text = (f"Вітаю в Хуст ПДР Бот!\n\n"
-            f"Обери маршрут → оплати → введи останні 4 цифри карти → отримай відео!\n\n"
-            f"Один маршрут — {PRICE_SINGLE} грн │ Всі 4 — {PRICE_ALL} грн\n\n"
-           f"Оплата на цю карту:\n\n**{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}**\n\nПереводь суму — відео миттєво!")
+    formatted_card = f"{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}"
+
+    text = (
+        f"Вітаю в <b>Хуст ПДР Бот</b>!\n\n"
+        f"Спочатку подивись <b>тестове відео</b> безкоштовно \n"
+        f"А потім обери потрібний маршрут \n\n"
+        f"Оплата на карту:\n"
+        f"<code>{formatted_card}</code>\n\n"
+        f"Один маршрут — <b>{PRICE_SINGLE} грн</b>\n"
+        f"Всі 4 — <b>{PRICE_ALL} грн</b>"
+    )
     if instructor_code:
         text += f"\n\nТи прийшов від інструктора: <b>{instructor_code}</b>"
 
@@ -166,6 +119,32 @@ async def start(m: types.Message, state: FSMContext):
 async def back(c: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await c.message.edit_text("Обери маршрут:", reply_markup=get_main_keyboard())
+
+# === ТЕСТОВЕ ВІДЕО + ЛОГУВАННЯ ===
+@dp.callback_query(F.data == "test_video")
+async def send_test_video(c: types.CallbackQuery):
+    test_link = "https://youtu.be/0cbWy8oLXS0"
+    
+    await c.message.answer(
+        f"Ось <b>тестове відео</b> — подивись якість!\n\n"
+        f"{test_link}\n\n"
+        f"Сподобалось? Обери маршрут нижче ",
+        reply_markup=get_main_keyboard(),
+        parse_mode="HTML"
+    )
+
+    # Лог адміну
+    username = c.from_user.username or "Без username"
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    await bot.send_message(
+        ADMIN_ID,
+        f"<b>Тестове відео переглянуто!</b>\n\n"
+        f"Користувач: @{escape(username)}\n"
+        f"ID: <code>{c.from_user.id}</code>\n"
+        f"Час: {now}",
+        parse_mode="HTML"
+    )
+    await c.answer()
 
 # === ПОКУПКА ===
 @dp.callback_query(F.data.startswith("buy_"))
@@ -183,9 +162,17 @@ async def buy(c: types.CallbackQuery, state: FSMContext):
     routes, amount = routes_map[c.data]
     await state.update_data(amount=amount, routes=routes)
 
+    formatted_card = f"{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}"
+
     await c.message.edit_text(
-        f"Введи <b>останні 4 цифри</b> карти, з якої оплатив:\n\nПриклад: <code>1234</code>\nСума: <b>{amount} грн</b>",
-        parse_mode="HTML", reply_markup=get_back_keyboard())
+        f"Введи <b>останні 4 цифри</b> карти, з якої оплатив:\n\n"
+        f"Приклад: <code>1234</code>\n"
+        f"Сума: <b>{amount} грн</b>\n\n"
+        f"Переконайся, що переклав на:\n"
+        f"<b>{formatted_card}</b>",
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard()
+    )
     await state.set_state(Order.waiting_last4)
 
 @dp.message(Order.waiting_last4)
@@ -206,21 +193,25 @@ async def get_last4(m: types.Message, state: FSMContext):
          datetime.now().strftime("%H:%M"), inst_code))
     conn.commit()
 
-       await m.answer(
-        f"Дякую! Оплата на суму <b>{amount} грн</b>\n\n"
-        f"Переконайся, що переклав на правильну карту:\n\n"
-        f"**{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}**\n\n"
+    formatted_card = f"{ADMIN_CARD[:4]} {ADMIN_CARD[4:8]} {ADMIN_CARD[8:12]} {ADMIN_CARD[12:]}"
+
+    await m.answer(
+        f"Дякую! Оплата <b>{amount} грн</b>\n\n"
+        f"Переконайся, що переклав на правильну карту:\n"
+        f"<b>{formatted_card}</b>\n\n"
         f"Чекаю підтвердження від адміна...",
         parse_mode="HTML"
     )
 
-    routes_txt = ", ".join(r.replace("khust_route", "№").replace("khust", "№").upper() for r in routes.split(","))
-    admin_text = (f"Новий заказ!\n\n"
-                  f"Користувач: @{escape(m.from_user.username or 'N/A')}\n"
-                  f"ID: <code>{m.from_user.id}</code>\n"
-                  f"Останні цифри: <b>{last4}</b>\n"
-                  f"Сума: <b>{amount} грн</b>\n"
-                  f"Маршрути: {routes_txt}")
+    routes_txt = ", ".join(r.replace("khust_route", "№").upper() for r in routes.split(","))
+    admin_text = (
+        f"<b>Новий заказ!</b>\n\n"
+        f"Користувач: @{escape(m.from_user.username or 'N/A')}\n"
+        f"ID: <code>{m.from_user.id}</code>\n"
+        f"Останні цифри: <b>{last4}</b>\n"
+        f"Сума: <b>{amount} грн</b>\n"
+        f"Маршрути: {routes_txt}"
+    )
     if inst_code:
         admin_text += f"\nРеферал: <code>{inst_code}</code>"
 
@@ -245,23 +236,18 @@ async def approve(c: types.CallbackQuery):
         uid, amt = int(uid), int(amt)
     except:
         return
-
     row = cursor.execute("SELECT routes, instructor_code FROM purchases WHERE user_id=? AND amount=? AND status='pending'", (uid, amt)).fetchone()
     if not row:
         return await c.answer("Замовлення вже оброблено", show_alert=True)
-
     routes, inst_code = row
     links = [VIDEOS[r.strip()] for r in routes.split(",") if r.strip() in VIDEOS]
     links_text = "\n".join(links)
     links_csv = ",".join(links)
-
     cursor.execute("UPDATE purchases SET status='success', links=? WHERE user_id=? AND amount=?", (links_csv, uid, amt))
     conn.commit()
-
     await bot.send_message(uid, "Оплата підтверджена!\nОсь твої відео:\n\n" + links_text)
     await bot.send_message(uid, "Можеш купити ще:", reply_markup=get_main_keyboard())
     await c.message.edit_text(c.message.html_text + "\n\nОдобрено та видано!", parse_mode="HTML")
-
     if inst_code:
         cursor.execute("UPDATE instructors SET total_earned = total_earned + ? WHERE code=?", (amt * 0.1, inst_code))
         conn.commit()
@@ -288,7 +274,6 @@ async def reject_reason(m: types.Message, state: FSMContext):
     cursor.execute("UPDATE purchases SET status='rejected' WHERE user_id=? AND amount=? AND status='pending'",
                    (data['rej_uid'], data['rej_amt']))
     conn.commit()
-
     await bot.send_message(
         data['rej_uid'],
         f"Оплата не підтверджена.\nПричина: {m.text}\nЗвернись до адміна.",
@@ -313,66 +298,41 @@ async def forward_support(m: types.Message, state: FSMContext):
     await m.answer("Повідомлення відправлено! Скоро відповім.")
     await state.clear()
 
-# === ЗАКРИТТЯ СПОРУ ===
-@dp.message(F.reply_to_message & F.from_user.id == ADMIN_ID)
-async def close_dispute(m: types.Message):
-    if m.from_user.id != ADMIN_ID:
-        return
-    orig = m.reply_to_message
-    if not orig or "Повідомлення в підтримку" not in orig.text:
-        return
-    try:
-        user_id = int(orig.text.split("ID: ")[1].split(")")[0])
-    except:
-        return
-    await bot.send_message(user_id, f"Відповідь адміна:\n\n{m.text}")
-    await m.edit_text(m.text + "\n\nСпір закрито", reply_markup=None)
-
-# === ДОДАТИ ІНСТРУКТОРА + QR ===
+# === ДОДАТИ ІНСТРУКТОРА ===
 @dp.message(Command("add_instructor"))
 async def add_instructor(m: types.Message):
     if m.from_user.id != ADMIN_ID:
         return
-
     try:
         _, code, username, card = m.text.split(maxsplit=3)
         username = username.lstrip('@')
     except:
         return await m.answer("Формат: /add_instructor 2992 @username 1111222233334444")
-
     cursor.execute("""INSERT INTO instructors (code, username, card) VALUES (?, ?, ?)
                       ON CONFLICT(code) DO UPDATE SET username=excluded.username, card=excluded.card""",
                    (code, username, card))
     conn.commit()
-
     bot_user = await bot.get_me()
     ref_link = f"https://t.me/{bot_user.username}?start=inst_{code}"
-
     qr = qrcode.QRCode(box_size=10, border=4)
     qr.add_data(ref_link)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
-
     bio = BytesIO()
     img.save(bio, 'PNG')
     bio.seek(0)
-
     await m.answer_photo(
         photo=types.BufferedInputFile(bio.read(), filename=f"ref_{code}.png"),
-        caption=f"Інструктор успішно додано!\n\n"
-                f"Код: <code>{code}</code>\n"
-                f"Ім'я: @{username}\n"
-                f"Карта: <code>{card}</code>\n\n"
-                f"Посилання:\n{ref_link}",
+        caption=f"Інструктор додано!\nКод: <code>{code}</code>\n@{username}\nКарта: <code>{card}</code>\n\n{ref_link}",
         parse_mode="HTML"
     )
 
-# === АДМІН КОМАНДИ ===
+# === СТАТИСТИКА ===
 @dp.message(Command("stats_full"))
 async def stats_full(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     rows = cursor.execute("SELECT status, COUNT(*), COALESCE(SUM(amount),0) FROM purchases GROUP BY status").fetchall()
-    text = "<b>Повна статистика:</b>\n\n"
+    text = "<b>Статистика:</b>\n\n"
     real = 0
     for status, count, suma in rows:
         emoji = {"success": "Успішно", "pending": "Очікують", "rejected": "Відмовлено"}.get(status, status)
@@ -382,100 +342,10 @@ async def stats_full(m: types.Message):
     text += f"\n<b>Реальний дохід:</b> {real} грн"
     await m.answer(text, parse_mode="HTML")
 
-@dp.message(Command("my"))
-async def my(m: types.Message):
-    row = cursor.execute("SELECT links FROM purchases WHERE user_id=? AND status='success' ORDER BY id DESC LIMIT 1", (m.from_user.id,)).fetchone()
-    if row and row[0]:
-        await m.answer("Твої маршрути:\n\n" + row[0].replace(',','\n'))
-    else:
-        await m.answer("Нічого не куплено")
-
 # === ЗАПУСК ===
 async def main():
-    log.info("Бот запущено успішно!")
+    log.info("Хуст ПДР Бот запущено!")
     await dp.start_polling(bot)
-
-# === ВИПЛАТИ ІНСТРУКТОРАМ ===
-@dp.message(Command("payouts"))
-async def payouts(m: types.Message):
-    if m.from_user.id != ADMIN_ID:
-        return await m.answer("Доступ заборонено")
-
-    rows = cursor.execute(
-        "SELECT code, username, total_earned FROM instructors WHERE total_earned > 0 ORDER BY total_earned DESC"
-    ).fetchall()
-
-    if not rows:
-        return await m.answer("Немає виплат інструкторам")
-
-    text = "<b>Виплати інструкторам:</b>\n\n"
-    keyboard = []
-    for code, username, earned in rows:
-        text += f"• @{username} (<code>{code}</code>) — <b>{earned:.2f} грн</b>\n"
-        keyboard.append([InlineKeyboardButton(
-            text=f"Виплатити {earned:.2f} грн → @{username}",
-            callback_data=f"payout_{code}"
-        )])
-    keyboard.append([InlineKeyboardButton(text="Оновити список", callback_data="refresh_payouts")])
-
-    await m.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-
-
-@dp.callback_query(F.data == "refresh_payouts")
-async def refresh_payouts(c: types.CallbackQuery):
-    await payouts(c.message)
-
-
-@dp.callback_query(F.data.startswith("payout_"))
-async def payout_confirm(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID:
-        return
-    code = c.data.split("_")[1]
-    row = cursor.execute("SELECT username, total_earned FROM instructors WHERE code=?", (code,)).fetchone()
-    if not row or row[1] <= 0:
-        return await c.answer("Немає що виплачувати", show_alert=True)
-
-    username, amount = row
-    await c.message.edit_text(
-        f"Підтвердити виплату <b>{amount:.2f} грн</b> інструктору @{username} (код {code})?",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Так, виплатив", callback_data=f"confirm_payout_{code}")],
-            [InlineKeyboardButton(text="Скасувати", callback_data="refresh_payouts")]
-        ]),
-        parse_mode="HTML"
-    )
-
-
-@dp.callback_query(F.data.startswith("confirm_payout_"))
-async def confirm_payout(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID:
-        return
-    code = c.data.split("_")[2]
-    row = cursor.execute("SELECT username, total_earned FROM instructors WHERE code=?", (code,)).fetchone()
-    if not row or row[1] <= 0:
-        return await c.answer("Вже виплачено", show_alert=True)
-
-    amount = row[1]
-    username = row[0]
-
-    # Обнуляємо в базі
-    cursor.execute("UPDATE instructors SET total_earned = 0 WHERE code=?", (code,))
-    conn.commit()
-
-    # Записуємо в Google Sheets
-    await log_to_sheets(
-        action="виплата інструктору",
-        code=code,
-        username=f"@{username}",
-        amount=amount,
-        comment="підтверджено адміном"
-    )
-
-    # Повідомлення адміну
-    await c.message.edit_text(
-        f"Виплата <b>{amount:.2f} грн</b> підтверджена та обнулена для @{username} ({code})\n\nЗаписано в Google Sheets"
-    )
-    await c.answer("Готово!")
 
 if __name__ == '__main__':
     asyncio.run(main())
